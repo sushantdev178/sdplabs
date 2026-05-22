@@ -1,0 +1,23 @@
+{
+  "name": "gantt-node-sample",
+  "version": "1.0.0",
+  "description": "A code sample for dhtmlxGantt node.js library",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "keywords": [
+    "dhtmlxgantt",
+    "node",
+    "chart",
+    "gantt",
+    "auto",
+    "scheduling"
+  ],
+  "author": "DHTMLX",
+  "license": "ISC",
+  "dependencies": {
+    "@dhtmlx/gantt-node": "file:../../",
+    "form-data": "^4.0.0"
+  }
+}

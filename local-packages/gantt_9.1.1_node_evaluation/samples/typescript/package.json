@@ -1,0 +1,25 @@
+{
+  "name": "gantt-node-sample",
+  "version": "1.0.0",
+  "description": "A typescript code sample for dhtmlxGantt node.js library",
+  "main": "index.js",
+  "scripts": {
+    "start": "tsc && node dist/index.js"
+  },
+  "keywords": [
+    "dhtmlxgantt",
+    "node",
+    "chart",
+    "gantt",
+    "auto",
+    "scheduling"
+  ],
+  "author": "DHTMLX",
+  "license": "ISC",
+  "dependencies": {
+    "@dhx/gantt-node": "file:../../"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3"
+  }
+}

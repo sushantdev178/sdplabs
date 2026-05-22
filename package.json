@@ -1,0 +1,23 @@
+{
+  "name": "gantt-node-server",
+  "version": "1.0.0",
+  "description": "Node server for DHTMLX Gantt auto-scheduling calculations",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "nodemon src/index.js"
+  },
+  "dependencies": {
+    "@dhx/gantt-node": "file:local-packages/gantt_9.1.1_node_evaluation",
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
+    "mysql2": "^3.22.2",
+    "uuid": "^14.0.0",
+    "winston": "^3.19.0",
+    "winston-daily-rotate-file": "^5.0.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.14"
+  }
+}

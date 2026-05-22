@@ -1,0 +1,30 @@
+{
+    "keep": {
+        "days": true,
+        "amount": 14
+    },
+    "auditLog": "/var/www/html/sushant/gantt/gantt-node-server/logs/.64c1e1b6b86149ca3ed3e89010df8f89815935f6-audit.json",
+    "files": [
+        {
+            "date": 1779186567815,
+            "name": "/var/www/html/sushant/gantt/gantt-node-server/logs/gantt-2026-05-19.log",
+            "hash": "ad1a5c08a5d06d816ac2b2ee0f634da521391495a43175c5725ac89e3b0125d3"
+        },
+        {
+            "date": 1779260057180,
+            "name": "/var/www/html/sushant/gantt/gantt-node-server/logs/gantt-2026-05-20.log",
+            "hash": "c0ef3358253bfe0be2f8aa83c8cc46dcbc8119bb3da92770f5fc741037b9b9b3"
+        },
+        {
+            "date": 1779346264559,
+            "name": "/var/www/html/sushant/gantt/gantt-node-server/logs/gantt-2026-05-21.log",
+            "hash": "18998bc3b1a6778c51a5709260c0d50362c66df1bd11315470210acce998d0a4"
+        },
+        {
+            "date": 1779426067222,
+            "name": "/var/www/html/sushant/gantt/gantt-node-server/logs/gantt-2026-05-22.log",
+            "hash": "506a90e9f10b79744bf834940c1620f53a4c8ae1cf8068d1be0df95164e0ad26"
+        }
+    ],
+    "hashType": "sha256"
+}
