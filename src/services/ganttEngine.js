@@ -12,9 +12,8 @@ const require = createRequire(import.meta.url);
 const { Gantt } = require('@dhx/gantt-node');
 
 // ────────────────────────────────────────────────
-// DATE HELPERS (unchanged)
+// DATE HELPERS
 // ────────────────────────────────────────────────
-
 const toGanttDate = (str) => {
     if (!str) return null;
     const m = str.match(/^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2}))?/);
@@ -52,9 +51,8 @@ const jsDateToGantt = (date) => {
 };
 
 // ────────────────────────────────────────────────
-// WORK DAYS (unchanged)
+// WORK DAYS
 // ────────────────────────────────────────────────
-
 const ISO_TO_JS = { 1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 6: 6, 7: 0 };
 
 export const parseWorkDays = (weekendJson) => {
@@ -68,9 +66,8 @@ export const parseWorkDays = (weekendJson) => {
 };
 
 // ────────────────────────────────────────────────
-// WORKING DAY SNAPPING (unchanged)
+// WORKING DAY SNAPPING
 // ────────────────────────────────────────────────
-
 const snapToWorkingDay = (ganttDate, direction, workDays, holidays) => {
     if (!ganttDate) return ganttDate;
     const d = ganttToJsDate(ganttDate);
@@ -91,35 +88,17 @@ const snapToWorkingDay = (ganttDate, direction, workDays, holidays) => {
         candidate.setDate(candidate.getDate() + delta);
         if (isWorking(candidate)) return jsDateToGantt(candidate);
     }
-
-    logger.warn(`snapToWorkingDay: no working day found within 14 days of ${ganttDate}`);
+    logger.warn(`snapToWorkingDay: no working day found for ${ganttDate}`);
     return ganttDate;
 };
 
-const applyWorkingDaySnap = (tasks, workDays, holidays) => {
-    const adjustments = [];
-    const snappedTasks = tasks.map(t => {
-        const ganttStart = toGanttDate(t.start_at);
-        const ganttEnd = toGanttDate(t.due_at);
-        const snappedStart = snapToWorkingDay(ganttStart, 'forward', workDays, holidays);
-        const snappedEnd = snapToWorkingDay(ganttEnd, 'backward', workDays, holidays);
-        const newStart = toMysqlDate(snappedStart);
-        const newEnd = toMysqlDate(snappedEnd);
-        if (newStart !== t.start_at || newEnd !== t.due_at) {
-            adjustments.push({ id: t.id, start_at: newStart, due_at: newEnd });
-        }
-        return { ...t, start_at: newStart, due_at: newEnd };
-    });
-    return { snappedTasks, adjustments };
-};
-
 // ────────────────────────────────────────────────
-// HIERARCHY EXPAND (unchanged)
+// HIERARCHY EXPAND
 // ────────────────────────────────────────────────
-
 const enforceHierarchyExpand = (tasksGantt, currentMysqlMap) => {
     const adjustments = [];
     const childrenOf = {};
+
     tasksGantt.forEach(t => {
         if (t.parent_id && t.parent_id !== 0) {
             (childrenOf[t.parent_id] ??= []).push(t.id);
@@ -144,6 +123,7 @@ const enforceHierarchyExpand = (tasksGantt, currentMysqlMap) => {
             const cmp = toComparable(k.start_date);
             return (!best || cmp < best.cmp) ? { cmp, val: k.start_date } : best;
         }, null);
+
         const maxChildEnd = kids.reduce((best, k) => {
             const cmp = toComparable(k.end_date);
             return (!best || cmp > best.cmp) ? { cmp, val: k.end_date } : best;
@@ -158,6 +138,7 @@ const enforceHierarchyExpand = (tasksGantt, currentMysqlMap) => {
             task.end_date = maxChildEnd.val;
             changed = true;
         }
+
         if (changed) {
             const newStart = toMysqlDate(task.start_date);
             const newEnd = toMysqlDate(task.end_date);
@@ -171,9 +152,8 @@ const enforceHierarchyExpand = (tasksGantt, currentMysqlMap) => {
 };
 
 // ────────────────────────────────────────────────
-// NORMALISERS (unchanged)
+// NORMALISERS
 // ────────────────────────────────────────────────
-
 const normaliseTask = (t) => ({
     id: t.id,
     text: t.name || `Task ${t.id}`,
@@ -193,19 +173,13 @@ const normaliseLink = (l) => ({
 });
 
 // ────────────────────────────────────────────────
-// DHTMLX LINK SCHEDULING (with full‑day work time)
+// DHTMLX LINK SCHEDULING
 // ────────────────────────────────────────────────
-
 const runLinkScheduling = ({ tasksGantt, links, config, triggeredTaskId }) => {
     const normTasks = tasksGantt.map(normaliseTask);
     const normLinks = links.map(normaliseLink);
 
-    const beforeMap = new Map();
-    normTasks.forEach(t => {
-        beforeMap.set(t.id, { start_date: t.start_date, end_date: t.end_date });
-    });
-
-    const moveAsap = config.gap_mode === 'compress';
+    const beforeMap = new Map(normTasks.map(t => [t.id, { start_date: t.start_date, end_date: t.end_date }]));
 
     const gantt = Gantt.getGanttInstance({
         plugins: { auto_scheduling: true },
@@ -217,14 +191,13 @@ const runLinkScheduling = ({ tasksGantt, links, config, triggeredTaskId }) => {
                 enabled: true,
                 schedule_on_parse: false,
                 mode: config.scheduling_mode || GANTT_AUTO_SCHEDULING_MODE,
-                move_asap_tasks: moveAsap,
+                move_asap_tasks: config.gap_mode === 'compress',
             },
             auto_scheduling_descendant_links: !!config.move_subtasks_with_parent,
         },
         data: { tasks: normTasks, links: normLinks },
     });
 
-    // Set working hours for whole day (00:00–24:00)
     const workDays = config.work_days || [1, 2, 3, 4, 5];
     [0, 1, 2, 3, 4, 5, 6].forEach(day => {
         gantt.setWorkTime({ day, hours: workDays.includes(day) ? ['00:00-24:00'] : [] });
@@ -245,8 +218,7 @@ const runLinkScheduling = ({ tasksGantt, links, config, triggeredTaskId }) => {
     const linkAdjustments = afterTasks
         .map(t => {
             const before = beforeMap.get(t.id);
-            if (!before) return null;
-            if (before.start_date !== t.start_date || before.end_date !== t.end_date) {
+            if (before && (before.start_date !== t.start_date || before.end_date !== t.end_date)) {
                 return {
                     id: t.id,
                     start_at: toMysqlDate(t.start_date),
@@ -261,13 +233,45 @@ const runLinkScheduling = ({ tasksGantt, links, config, triggeredTaskId }) => {
 };
 
 // ────────────────────────────────────────────────
-// RECURSIVE TASK FETCH (new)
+// CONNECTED COMPONENT (Hierarchy + Links)
 // ────────────────────────────────────────────────
+const getConnectedComponent = (startId, allTasks, allLinks) => {
+    const graph = new Map();
+    const addEdge = (a, b) => {
+        if (!graph.has(a)) graph.set(a, new Set());
+        if (!graph.has(b)) graph.set(b, new Set());
+        graph.get(a).add(b);
+        graph.get(b).add(a);
+    };
 
+    allTasks.forEach(t => {
+        if (t.parent_id && t.parent_id !== 0) addEdge(t.id, t.parent_id);
+    });
+    allLinks.forEach(l => addEdge(l.source_task_id, l.target_task_id));
+
+    const visited = new Set();
+    const queue = [startId];
+    visited.add(startId);
+
+    while (queue.length > 0) {
+        const current = queue.shift();
+        const neighbors = graph.get(current) || new Set();
+        for (const neighbor of neighbors) {
+            if (!visited.has(neighbor)) {
+                visited.add(neighbor);
+                queue.push(neighbor);
+            }
+        }
+    }
+    return visited;
+};
+
+// ────────────────────────────────────────────────
+// FETCH PROJECT TASK IDS
+// ────────────────────────────────────────────────
 async function fetchProjectTaskIds(workspace_id, project_id) {
     const rootRows = await query(
-        `SELECT task_id FROM ph_project_tasks
-         WHERE workspace_id = ? AND project_id = ?`,
+        `SELECT task_id FROM ph_project_tasks WHERE workspace_id = ? AND project_id = ?`,
         [workspace_id, project_id]
     );
     const rootIds = rootRows.map(r => r.task_id);
@@ -289,31 +293,31 @@ async function fetchProjectTaskIds(workspace_id, project_id) {
         newIds.forEach(id => allIds.add(id));
         currentLevel = newIds;
     }
-
     return [...allIds];
 }
 
 // ────────────────────────────────────────────────
-// RECALCULATE SCOPE (unchanged)
+// RECALCULATE SCOPE
 // ────────────────────────────────────────────────
-
 const recalculateScope = ({
     tasksInScope,
     linksInScope,
     config,
     triggeredTaskId,
+    dbOriginalDates,
+    hasActualChange
 }) => {
-    let hierarchyAdjustments = [];
-    let tasksForScheduling = tasksInScope;
+    let tasksForScheduling = [...tasksInScope];
 
-    if (config.restrict_to_working_days) {
-        const { snappedTasks, adjustments } = applyWorkingDaySnap(
-            tasksInScope,
-            config.work_days,
-            config.holidays
-        );
-        tasksForScheduling = snappedTasks;
-        hierarchyAdjustments = adjustments;
+    // Snap only on actual user change
+    if (config.restrict_to_working_days && triggeredTaskId && hasActualChange) {
+        const task = tasksForScheduling.find(t => t.id === triggeredTaskId);
+        if (task) {
+            const gStart = toGanttDate(task.start_at);
+            const gEnd = toGanttDate(task.due_at);
+            task.start_at = toMysqlDate(snapToWorkingDay(gStart, 'forward', config.work_days, config.holidays));
+            task.due_at = toMysqlDate(snapToWorkingDay(gEnd, 'backward', config.work_days, config.holidays));
+        }
     }
 
     const ganttReadyTasks = tasksForScheduling.map(t => ({
@@ -322,120 +326,116 @@ const recalculateScope = ({
         end_date: toGanttDate(t.due_at),
     }));
 
-    const currentMysqlMap = new Map();
-    tasksForScheduling.forEach(t =>
-        currentMysqlMap.set(t.id, { start_at: t.start_at, due_at: t.due_at })
-    );
+    const currentMysqlMap = new Map(tasksForScheduling.map(t => [t.id, { start_at: t.start_at, due_at: t.due_at }]));
+
     const hierarchyExpandAdjustments = enforceHierarchyExpand(ganttReadyTasks, currentMysqlMap);
-    hierarchyAdjustments.push(...hierarchyExpandAdjustments);
 
-    const { linkAdjustments: dhtmlxAdjustments, afterTasks } = runLinkScheduling({
-        tasksGantt: ganttReadyTasks,
-        links: linksInScope,
-        config,
-        triggeredTaskId,
-    });
+    let dhtmlxAdjustments = [];
+    let afterTasks = ganttReadyTasks;
 
-    const afterMap = new Map();
-    afterTasks.forEach(t => {
-        afterMap.set(t.id, {
-            start_at: toMysqlDate(t.start_date),
-            due_at: toMysqlDate(t.end_date),
+    if (hasActualChange && linksInScope.length > 0) {
+        const result = runLinkScheduling({
+            tasksGantt: ganttReadyTasks,
+            links: linksInScope,
+            config,
+            triggeredTaskId
         });
-    });
+        dhtmlxAdjustments = result.linkAdjustments;
+        afterTasks = result.afterTasks;
+    }
+
+    const afterMap = new Map(afterTasks.map(t => [t.id, {
+        start_at: toMysqlDate(t.start_date),
+        due_at: toMysqlDate(t.end_date)
+    }]));
 
     const afterGanttArray = afterTasks.map(t => ({
         id: t.id,
         parent_id: tasksInScope.find(orig => orig.id === t.id)?.parent_id ?? 0,
-        name: '',
         start_date: t.start_date,
         end_date: t.end_date,
     }));
 
     const postLinkExpandAdjustments = enforceHierarchyExpand(afterGanttArray, afterMap);
 
-    const linkAdjustments = [
-        ...dhtmlxAdjustments,
-        ...postLinkExpandAdjustments,
-    ].reduce((acc, adj) => {
-        acc.set(adj.id, adj);
-        return acc;
-    }, new Map());
+    const allAdj = [...hierarchyExpandAdjustments, ...dhtmlxAdjustments, ...postLinkExpandAdjustments];
+
+    const finalAdjustments = allAdj.filter(adj => {
+        const orig = dbOriginalDates.get(adj.id);
+        return orig && (orig.start_at !== adj.start_at || orig.due_at !== adj.due_at);
+    });
 
     return {
-        hierarchyAdjustments,
-        linkAdjustments: [...linkAdjustments.values()],
-        afterGanttArray,
+        hierarchyAdjustments: finalAdjustments,
+        linkAdjustments: finalAdjustments,
     };
 };
 
 // ────────────────────────────────────────────────
-// HIERARCHY TREE RESOLVER (unchanged)
+// PROJECT RANGE CALCULATION
 // ────────────────────────────────────────────────
+const calculateProjectRange = (allTasks, adjustments, project) => {
+    const taskMap = new Map(allTasks.map(t => [t.id, { ...t }]));
 
-const getHierarchyTree = (taskId, allTasks) => {
-    const taskMap = new Map(allTasks.map(t => [t.id, t]));
-
-    let rootId = taskId;
-    let current = taskMap.get(taskId);
-    const visited = new Set();
-
-    while (current && current.parent_id && current.parent_id !== 0) {
-        if (visited.has(current.id)) {
-            logger.warn(`getHierarchyTree: circular parent reference at ${current.id}`);
-            break;
+    adjustments.forEach(adj => {
+        const t = taskMap.get(adj.id);
+        if (t) {
+            t.start_at = adj.start_at;
+            t.due_at = adj.due_at;
         }
-        visited.add(current.id);
-        const parent = taskMap.get(current.parent_id);
-        if (!parent) break;
-        rootId = parent.id;
-        current = parent;
-    }
+    });
 
-    const ids = new Set();
-    const collect = (id) => {
-        ids.add(id);
-        allTasks.filter(t => t.parent_id === id).forEach(t => collect(t.id));
-    };
-    collect(rootId);
-    return { rootId, ids };
+    const allGantt = Array.from(taskMap.values()).map(t => ({
+        start_date: toGanttDate(t.start_at),
+        end_date: toGanttDate(t.due_at),
+    }));
+
+    const range = allGantt.reduce((acc, t) => {
+        const s = toComparable(t.start_date);
+        const e = toComparable(t.end_date);
+        if (s && (!acc.min || s < acc.min)) { acc.min = s; acc.minGantt = t.start_date; }
+        if (e && (!acc.max || e > acc.max)) { acc.max = e; acc.maxGantt = t.end_date; }
+        return acc;
+    }, { min: null, max: null, minGantt: null, maxGantt: null });
+
+    if (!range.minGantt || !range.maxGantt) return null;
+
+    const newStart = toMysqlDate(range.minGantt);
+    const newEnd = toMysqlDate(range.maxGantt);
+
+    const origStart = toComparable(toGanttDate(project.project_start));
+    const origEnd = toComparable(toGanttDate(project.project_end));
+
+    if (range.min < origStart || range.max > origEnd) {
+        return { start_at: newStart, due_at: newEnd };
+    }
+    return null;
 };
 
 // ────────────────────────────────────────────────
-// MAIN RECALCULATE IMPACT
+// MAIN RECALCULATE IMPACT (DB-First)
 // ────────────────────────────────────────────────
-
 export const recalculateImpact = async ({
     workspace_id,
     project_id,
     task_id,
-    taskUpdates
+    taskUpdates   // optional - for backward compatibility only
 }) => {
-    // 1. Resolve project ID
     let finalProjectId = project_id;
     if (!finalProjectId && task_id) {
         const [row] = await query(
-            `SELECT project_id FROM ph_project_tasks
-             WHERE workspace_id = ? AND task_id = ? LIMIT 1`,
+            `SELECT project_id FROM ph_project_tasks WHERE workspace_id = ? AND task_id = ? LIMIT 1`,
             [workspace_id, task_id]
         );
         if (!row) throw new Error(`Task ${task_id} not found in any project`);
         finalProjectId = row.project_id;
     }
-    if (!finalProjectId) {
-        throw new Error('project_id is required when task_id is not provided');
-    }
+    if (!finalProjectId) throw new Error('project_id is required');
 
-    // 2. Fetch project config
-    const [project] = await query(
-        `SELECT auto_schedule_tasks,
-                auto_schedule_tasks_gap,
-                move_subtasks_with_parent,
-                restrict_tasks_to_working_days,
-                start_date AS project_start,
-                due_date   AS project_end
-         FROM ph_projects
-         WHERE workspace_id = ? AND id = ? AND deleted_at IS NULL`,
+    const [project] = await query(`
+        SELECT auto_schedule_tasks, auto_schedule_tasks_gap, move_subtasks_with_parent,
+               restrict_tasks_to_working_days, start_date AS project_start, due_date AS project_end
+        FROM ph_projects WHERE workspace_id = ? AND id = ? AND deleted_at IS NULL`,
         [workspace_id, finalProjectId]
     );
     if (!project) throw new Error(`Project ${finalProjectId} not found`);
@@ -446,36 +446,28 @@ export const recalculateImpact = async ({
             linkAdjustments: [],
             impactedTaskIds: [],
             project: null,
+            triggeredTask: null
         };
     }
 
-    // 3. Fetch workspace weekend
-    const [workspace] = await query(
-        `SELECT weekend FROM ph_workspaces WHERE id = ? LIMIT 1`,
-        [workspace_id]
-    );
+    const [workspace] = await query(`SELECT weekend FROM ph_workspaces WHERE id = ? LIMIT 1`, [workspace_id]);
     const workDays = parseWorkDays(workspace?.weekend);
 
-    // 4. Fetch ALL project tasks recursively
     const projectTaskIds = await fetchProjectTaskIds(workspace_id, finalProjectId);
     let allTasks = [];
     if (projectTaskIds.length > 0) {
         const placeholders = projectTaskIds.map(() => '?').join(',');
-        allTasks = await query(
-            `SELECT id, name, start_at, due_at, parent_id,
-                    constraint_type, constraint_date
-             FROM ph_tasks
-             WHERE id IN (${placeholders})
-               AND workspace_id = ?
-               AND deleted_at IS NULL AND deleted_ancestor_id IS NULL
-               AND start_at IS NOT NULL AND due_at IS NOT NULL
-             ORDER BY id`,
+        allTasks = await query(`
+            SELECT id, name, start_at, due_at, parent_id, constraint_type, constraint_date
+            FROM ph_tasks WHERE id IN (${placeholders}) AND workspace_id = ?
+            AND deleted_at IS NULL AND deleted_ancestor_id IS NULL
+            AND start_at IS NOT NULL AND due_at IS NOT NULL`,
             [...projectTaskIds, workspace_id]
         );
     }
 
-    // 5. Override triggered task's dates if provided
-    if (taskUpdates && taskUpdates.start_at && taskUpdates.due_at && task_id) {
+    // DB-First: Always read from database (only override if dates explicitly passed)
+    if (task_id && taskUpdates?.start_at && taskUpdates?.due_at) {
         const task = allTasks.find(t => t.id === task_id);
         if (task) {
             task.start_at = taskUpdates.start_at;
@@ -483,11 +475,9 @@ export const recalculateImpact = async ({
         }
     }
 
-    // 6. Fetch all links
     const allLinks = await query(
         `SELECT id, source_task_id, target_task_id, \`type\`
-         FROM ph_task_links
-         WHERE workspace_id = ? AND project_id = ?`,
+         FROM ph_task_links WHERE workspace_id = ? AND project_id = ?`,
         [workspace_id, finalProjectId]
     );
 
@@ -501,164 +491,110 @@ export const recalculateImpact = async ({
         restrict_to_working_days: !!project.restrict_tasks_to_working_days,
     };
 
-    let allHierarchyAdjustments = [];
-    let allLinkAdjustments = [];
-    let allAfterGanttArrays = [];
+    const dbOriginalDates = new Map(allTasks.map(t => [t.id, { start_at: t.start_at, due_at: t.due_at }]));
+
+    const hasActualChange = !!(taskUpdates?.start_at && taskUpdates?.due_at);
+    let allAdjustments = [];
 
     if (task_id) {
-        const { rootId, ids: hierarchyIds } = getHierarchyTree(task_id, allTasks);
-        const tasksInScope = allTasks.filter(t => hierarchyIds.has(t.id));
-        const linksInScope = allLinks.filter(
-            l => hierarchyIds.has(l.source_task_id) && hierarchyIds.has(l.target_task_id)
+        const componentIds = getConnectedComponent(task_id, allTasks, allLinks);
+        const tasksInScope = allTasks.filter(t => componentIds.has(t.id));
+        const linksInScope = allLinks.filter(l =>
+            componentIds.has(l.source_task_id) && componentIds.has(l.target_task_id)
         );
 
-        const { hierarchyAdjustments, linkAdjustments, afterGanttArray } = recalculateScope({
+        const result = recalculateScope({
             tasksInScope,
             linksInScope,
             config,
             triggeredTaskId: task_id,
+            dbOriginalDates,
+            hasActualChange
         });
-
-        allHierarchyAdjustments = hierarchyAdjustments;
-        allLinkAdjustments = linkAdjustments;
-        allAfterGanttArrays = afterGanttArray;
-
-        // For project range, include all tasks (not just this hierarchy)
-        // We'll use the full allTasks for range calculation below.
+        allAdjustments = [...result.hierarchyAdjustments, ...result.linkAdjustments];
     } else {
-        const allTaskIdsSet = new Set(allTasks.map(t => t.id));
-        const rootTasks = allTasks.filter(
-            t => !t.parent_id || t.parent_id === 0 || !allTaskIdsSet.has(t.parent_id)
-        );
-
-        for (const root of rootTasks) {
-            const { ids: hierarchyIds } = getHierarchyTree(root.id, allTasks);
-            const tasksInScope = allTasks.filter(t => hierarchyIds.has(t.id));
-            const linksInScope = allLinks.filter(
-                l => hierarchyIds.has(l.source_task_id) && hierarchyIds.has(l.target_task_id)
+        // Full project mode
+        const processed = new Set();
+        const roots = allTasks.filter(t => !t.parent_id || t.parent_id === 0);
+        for (const root of roots) {
+            if (processed.has(root.id)) continue;
+            const componentIds = getConnectedComponent(root.id, allTasks, allLinks);
+            const tasksInScope = allTasks.filter(t => componentIds.has(t.id));
+            const linksInScope = allLinks.filter(l =>
+                componentIds.has(l.source_task_id) && componentIds.has(l.target_task_id)
             );
 
-            const { hierarchyAdjustments, linkAdjustments, afterGanttArray } = recalculateScope({
+            const result = recalculateScope({
                 tasksInScope,
                 linksInScope,
                 config,
                 triggeredTaskId: null,
+                dbOriginalDates,
+                hasActualChange: false
             });
-
-            allHierarchyAdjustments.push(...hierarchyAdjustments);
-            allLinkAdjustments.push(...linkAdjustments);
-            allAfterGanttArrays.push(...afterGanttArray);
-        }
-    }
-
-    // Phase 3: Project date range (use ALL project tasks, not just processed ones)
-    const allGanttTasks = allTasks.map(t => ({
-        ...t,
-        start_date: toGanttDate(t.start_at),
-        end_date: toGanttDate(t.due_at),
-    }));
-    // Override with processed dates where available
-    for (const adj of [...allHierarchyAdjustments, ...allLinkAdjustments]) {
-        const ganttTask = allGanttTasks.find(t => t.id === adj.id);
-        if (ganttTask) {
-            ganttTask.start_date = toGanttDate(adj.start_at);
-            ganttTask.end_date = toGanttDate(adj.due_at);
-        }
-    }
-
-    const projectRange = allGanttTasks.reduce(
-        (acc, t) => {
-            const startComp = toComparable(t.start_date);
-            const endComp = toComparable(t.end_date);
-            if (startComp && (!acc.minComp || startComp < acc.minComp)) {
-                acc.minGantt = t.start_date;
-                acc.minComp = startComp;
-            }
-            if (endComp && (!acc.maxComp || endComp > acc.maxComp)) {
-                acc.maxGantt = t.end_date;
-                acc.maxComp = endComp;
-            }
-            return acc;
-        },
-        { minGantt: null, minComp: null, maxGantt: null, maxComp: null }
-    );
-
-    let projectResponse = null;
-    if (projectRange.minGantt && projectRange.maxGantt) {
-        const newStart = toMysqlDate(projectRange.minGantt);
-        const newEnd = toMysqlDate(projectRange.maxGantt);
-        const origStart = toComparable(toGanttDate(project.project_start));
-        const origEnd = toComparable(toGanttDate(project.project_end));
-
-        if (projectRange.minComp < origStart || projectRange.maxComp > origEnd) {
-            projectResponse = { start_at: newStart, due_at: newEnd };
+            allAdjustments.push(...result.hierarchyAdjustments, ...result.linkAdjustments);
+            componentIds.forEach(id => processed.add(id));
         }
     }
 
     const dedup = (arr) => [...arr.reduce((m, a) => m.set(a.id, a), new Map()).values()];
-    const finalHierarchyAdjustments = dedup(allHierarchyAdjustments);
-    const finalLinkAdjustments = dedup(allLinkAdjustments);
+    const finalAdjustments = dedup(allAdjustments);
 
-    const allImpactedIds = [
-        ...new Set([
-            ...finalHierarchyAdjustments.map(a => a.id),
-            ...finalLinkAdjustments.map(a => a.id),
-        ])
-    ];
+    let triggeredTask = null;
+    if (task_id) {
+        const finalTask = allTasks.find(t => t.id === task_id);
+        if (finalTask) {
+            triggeredTask = {
+                id: task_id,
+                start_at: finalTask.start_at,
+                due_at: finalTask.due_at
+            };
+        }
+    }
+
+    const projectResponse = calculateProjectRange(allTasks, finalAdjustments, project);
 
     return {
-        hierarchyAdjustments: finalHierarchyAdjustments,
-        linkAdjustments: finalLinkAdjustments,
-        impactedTaskIds: allImpactedIds,
+        hierarchyAdjustments: finalAdjustments,
+        linkAdjustments: finalAdjustments,
+        impactedTaskIds: [...new Set(finalAdjustments.map(a => a.id))],
         project: projectResponse,
+        triggeredTask
     };
 };
 
 // ────────────────────────────────────────────────
-// GET PROJECT DATA (for frontend loading)
+// GET PROJECT DATA
 // ────────────────────────────────────────────────
-
 export const getProjectData = async ({ workspace_id, project_id }) => {
     const [project] = await query(
         `SELECT id, name, start_date, due_date,
-                auto_schedule_tasks,
-                auto_schedule_tasks_gap,
-                move_subtasks_with_parent,
-                restrict_tasks_to_working_days
-         FROM ph_projects
-         WHERE workspace_id = ? AND id = ? AND deleted_at IS NULL`,
+                auto_schedule_tasks, auto_schedule_tasks_gap,
+                move_subtasks_with_parent, restrict_tasks_to_working_days
+         FROM ph_projects WHERE workspace_id = ? AND id = ? AND deleted_at IS NULL`,
         [workspace_id, project_id]
     );
     if (!project) throw new Error('Project not found');
 
-    const [workspace] = await query(
-        `SELECT weekend FROM ph_workspaces WHERE id = ? LIMIT 1`,
-        [workspace_id]
-    );
+    const [workspace] = await query(`SELECT weekend FROM ph_workspaces WHERE id = ? LIMIT 1`, [workspace_id]);
     const workDays = parseWorkDays(workspace?.weekend);
 
-    // Use the same recursive fetch for frontend loading
     const projectTaskIds = await fetchProjectTaskIds(workspace_id, project_id);
     let tasks = [];
     if (projectTaskIds.length > 0) {
         const placeholders = projectTaskIds.map(() => '?').join(',');
-        tasks = await query(
-            `SELECT id, name, start_at, due_at, parent_id,
-                    constraint_type, constraint_date
-             FROM ph_tasks
-             WHERE id IN (${placeholders})
-               AND workspace_id = ?
-               AND deleted_at IS NULL AND deleted_ancestor_id IS NULL
-               AND start_at IS NOT NULL AND due_at IS NOT NULL
-             ORDER BY id`,
+        tasks = await query(`
+            SELECT id, name, start_at, due_at, parent_id, constraint_type, constraint_date
+            FROM ph_tasks WHERE id IN (${placeholders}) AND workspace_id = ?
+            AND deleted_at IS NULL AND deleted_ancestor_id IS NULL
+            AND start_at IS NOT NULL AND due_at IS NOT NULL`,
             [...projectTaskIds, workspace_id]
         );
     }
 
     const links = await query(
         `SELECT id, source_task_id, target_task_id, type
-         FROM ph_task_links
-         WHERE workspace_id = ? AND project_id = ?`,
+         FROM ph_task_links WHERE workspace_id = ? AND project_id = ?`,
         [workspace_id, project_id]
     );
 
