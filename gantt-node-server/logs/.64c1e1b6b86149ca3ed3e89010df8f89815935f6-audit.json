@@ -24,6 +24,11 @@
             "date": 1779426067222,
             "name": "/var/www/html/sushant/gantt/gantt-node-server/logs/gantt-2026-05-22.log",
             "hash": "506a90e9f10b79744bf834940c1620f53a4c8ae1cf8068d1be0df95164e0ad26"
+        },
+        {
+            "date": 1779856562354,
+            "name": "/var/www/html/sushant/gantt/gantt-node-server/logs/gantt-2026-05-27.log",
+            "hash": "926afd3541f55de22df83c52e5113e5857a637fda9ac0112755efc747e83007c"
         }
     ],
     "hashType": "sha256"

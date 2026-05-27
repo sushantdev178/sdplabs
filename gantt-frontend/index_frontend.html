@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="UTF-8">
+    <title>Frontend-only Gantt</title>
+    <script src="codebase/dhtmlxgantt.js"></script>
+    <link rel="stylesheet" href="codebase/dhtmlxgantt.css">
+    <style>
+        html,
+        body {
+            height: 100%;
+            margin: 0;
+            font-family: Arial, sans-serif;
+        }
+
+        #toolbar {
+            padding: 8px;
+            background: #f5f5f5;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        #toolbar input[type="number"] {
+            width: 80px;
+            padding: 4px;
+        }
+
+        #toolbar button {
+            padding: 5px 12px;
+            cursor: pointer;
+        }
+
+        .weekend_cell {
+            background-color: #ffebee;
+        }
+    </style>
+</head>
+
+<body>
+    <div
+        style="background:#333; padding:6px 12px; display:flex; gap:16px; align-items:center; font-family:Arial,sans-serif; font-size:14px;">
+        <a href="index.html" style="color:#fff; text-decoration:none;">🏠 Hub</a>
+        <a href="index_node.html" style="color:#90caf9; text-decoration:none;">📡 Node‑Server Gantt</a>
+        <a href="index_frontend.html" style="color:#90caf9; text-decoration:none;">🖥️ Frontend‑Only Gantt</a>
+    </div>
+    <div id="toolbar">
+        <label>Workspace: <input type="number" id="wsId" value="1187" /></label>
+        <label>Project: <input type="number" id="projId" value="34306" /></label>
+        <button onclick="loadProject()">Load Project</button>
+        <button onclick="resetStorage()">Reset LocalStorage</button>
+        <span id="status" style="color:#888;"></span>
+        <span id="flagsInfo" style="margin-left:16px; font-size:13px; color:#555;"></span>
+    </div>
+    <div id="gantt_here" style="width:100%; height:calc(100% - 50px);"></div>
+
+    <script>
+        const STORAGE_KEY = 'frontendLibGanttData';
+        const API_BASE = 'http://192.168.1.44:3001/api/gantt';
+        const ROOT_ID = -1;
+
+        function mysqlToGantt(str) {
+            if (!str) return null;
+            const m = str.match(/^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?)?/);
+            if (!m) return null;
+            const [, y, mo, d, h = '00', min = '00'] = m;
+            return `${d}-${mo}-${y} ${h}:${min}`;
+        }
+
+        function ganttToMysql(ganttStr) {
+            if (!ganttStr) return null;
+            const m = ganttStr.match(/^(\d{2})-(\d{2})-(\d{4}) (\d{2}):(\d{2})/);
+            if (!m) return null;
+            const [, d, mo, y, h, min] = m;
+            return `${y}-${mo}-${d} ${h}:${min}:00`;
+        }
+
+        const linkTypeMap = {
+            'finish_to_start': '0',
+            'start_to_start': '1',
+            'finish_to_finish': '2',
+            'start_to_finish': '3'
+        };
+
+        let currentWsId = null, currentProjId = null;
+        let autoSaveTimer = null;
+
+        // ────────────────────────────────────────────────
+        // FRONTEND CIRCULAR LINKAGE VERIFIER (DAG CHECK)
+        // ────────────────────────────────────────────────
+        function validateFrontendCycle(sourceId, targetId) {
+            if (sourceId == targetId) return true;
+
+            const visited = new Set();
+            const queue = [targetId];
+
+            while (queue.length > 0) {
+                const current = queue.shift();
+                if (current == sourceId) return true; // Found a backwards loop link path!
+
+                if (!visited.has(current)) {
+                    visited.add(current);
+                    // Find all out-edges originating from this branch item
+                    gantt.getLinks().forEach(l => {
+                        if (l.source == current) {
+                            queue.push(l.target);
+                        }
+                    });
+                }
+            }
+            return false;
+        }
+
+        function saveToStorage() {
+            const data = gantt.serialize();
+            // Do not post or store the artificial container root parent element (-1)
+            const tasks = data.data
+                .filter(t => t.id !== ROOT_ID)
+                .map(t => ({
+                    id: t.id,
+                    text: t.text,
+                    start_date: ganttToMysql(t.start_date),
+                    end_date: ganttToMysql(t.end_date),
+                    parent: t.parent === ROOT_ID ? 0 : t.parent,
+                    constraint_type: t.constraint_type || null,
+                    constraint_date: t.constraint_date ? ganttToMysql(t.constraint_date) : null
+                }));
+
+            const links = data.links.map(l => ({
+                id: l.id,
+                source: l.source,
+                target: l.target,
+                type: Object.keys(linkTypeMap).find(k => linkTypeMap[k] === l.type) || 'finish_to_start'
+            }));
+
+            localStorage.setItem(STORAGE_KEY, JSON.stringify({ tasks, links }));
+        }
+
+        function loadFromStorage() {
+            const raw = localStorage.getItem(STORAGE_KEY);
+            return raw ? JSON.parse(raw) : null;
+        }
+
+        function clearStorage() {
+            localStorage.removeItem(STORAGE_KEY);
+        }
+
+        function renderGantt(projectData) {
+            gantt.clearAll();
+            gantt.plugins({ auto_scheduling: true });
+            gantt.init("gantt_here");
+
+            const { project, workspace, tasks, links } = projectData;
+            const workDays = workspace.work_days;
+            const holidays = workspace.holidays || [];
+
+            document.getElementById('flagsInfo').innerHTML =
+                `Auto-schedule: ${project.auto_schedule_tasks ? 'ON' : 'OFF'} | ` +
+                `Gap: ${project.auto_schedule_tasks_gap} | ` +
+                `Move subtasks: ${project.move_subtasks_with_parent ? 'ON' : 'OFF'} | ` +
+                `Work days only: ${project.restrict_tasks_to_working_days ? 'ON' : 'OFF'}`;
+
+            // Precalculate which tasks are summary projects dynamically based on current parent maps
+            const parentIds = new Set(tasks.map(t => Number(t.parent)).filter(p => p > 0));
+
+            let ganttTasks = tasks.map(t => ({
+                id: t.id,
+                text: t.text,
+                start_date: mysqlToGantt(t.start_date),
+                end_date: mysqlToGantt(t.end_date),
+                type: parentIds.has(Number(t.id)) ? 'project' : 'task',
+                parent: t.parent || 0,
+                ...(t.constraint_type && { constraint_type: t.constraint_type }),
+                ...(t.constraint_date && { constraint_date: mysqlToGantt(t.constraint_date) })
+            }));
+
+            let globalMin = null, globalMax = null;
+            ganttTasks.forEach(t => {
+                if (t.start_date && (!globalMin || t.start_date < globalMin)) globalMin = t.start_date;
+                if (t.end_date && (!globalMax || t.end_date > globalMax)) globalMax = t.end_date;
+            });
+
+            const projStart = mysqlToGantt(project.start_date || project.start_at);
+            const projEnd = mysqlToGantt(project.due_date || project.due_at);
+            if (projStart && projStart < globalMin) globalMin = projStart;
+            if (projEnd && projEnd > globalMax) globalMax = projEnd;
+
+            const rootTask = {
+                id: ROOT_ID,
+                text: 'Project Wrapper Container',
+                type: 'project',
+                start_date: globalMin,
+                end_date: globalMax,
+                parent: 0,
+                open: true
+            };
+
+            ganttTasks = ganttTasks.map(t => ({ ...t, parent: t.parent === 0 ? ROOT_ID : t.parent }));
+            ganttTasks.push(rootTask);
+
+            const ganttLinks = links.map(l => ({
+                id: l.id,
+                source: l.source,
+                target: l.target,
+                type: linkTypeMap[l.type] || '0'
+            }));
+
+            gantt.config.duration_unit = 'day';
+            gantt.config.work_time = project.restrict_tasks_to_working_days;
+            gantt.config.auto_types = false;
+            gantt.config.drag_project = project.move_subtasks_with_parent;
+            gantt.config.auto_scheduling = {
+                enabled: project.auto_schedule_tasks,
+                mode: 'auto',
+                move_asap_tasks: project.auto_schedule_tasks_gap === 'compress',
+                schedule_on_parse: false,
+            };
+            gantt.config.auto_scheduling_descendant_links = project.move_subtasks_with_parent;
+
+            [0, 1, 2, 3, 4, 5, 6].forEach(day => gantt.setWorkTime({ day, hours: workDays.includes(day) }));
+            holidays.forEach(dateStr => gantt.setWorkTime({ date: new Date(dateStr), hours: false }));
+
+            gantt.config.columns = [
+                { name: "text", tree: true, width: 220 },
+                { name: "start_date", align: "center", width: 100 },
+                { name: "end_date", align: "center", width: 100 },
+                { name: "add", width: 44 }
+            ];
+
+            gantt.templates.timeline_cell_class = function (task, date) {
+                if (!workDays.includes(date.getDay())) return "weekend_cell";
+                return "";
+            };
+
+            gantt.parse({ data: ganttTasks, links: ganttLinks });
+
+            function scheduleSave() {
+                clearTimeout(autoSaveTimer);
+                autoSaveTimer = setTimeout(saveToStorage, 500);
+            }
+
+            // ────────────────────────────────────────────────
+            // INTERACTION GATE EVENTS
+            // ────────────────────────────────────────────────
+            gantt.attachEvent("onBeforeLinkAdd", function (id, link) {
+                const isCircular = validateFrontendCycle(link.source, link.target);
+                if (isCircular) {
+                    gantt.message({ type: "error", text: "Circular dependency detected! Link blocked." });
+                    return false; // Blocks link creation locally
+                }
+                return true;
+            });
+
+            gantt.attachEvent("onAfterTaskDrag", scheduleSave);
+            gantt.attachEvent("onAfterTaskResize", scheduleSave);
+            gantt.attachEvent("onAfterLinkAdd", scheduleSave);
+            gantt.attachEvent("onAfterLinkDelete", scheduleSave);
+            gantt.attachEvent("onAfterTaskAdd", scheduleSave);
+            gantt.attachEvent("onAfterTaskDelete", scheduleSave);
+
+            if (project.move_subtasks_with_parent) {
+                gantt.attachEvent("onTaskDrag", function (id, mode, task, original) {
+                    if (mode === gantt.config.drag_mode.move) {
+                        const diff = task.start_date - original.start_date;
+                        gantt.eachTask(function (child) {
+                            child.start_date = new Date(+child.start_date + diff);
+                            child.end_date = new Date(+child.end_date + diff);
+                            gantt.refreshTask(child.id, true);
+                        }, id);
+                    }
+                    return true;
+                });
+            }
+
+            document.getElementById('status').textContent = 'Ready (Frontend Mode Active)';
+        }
+
+        async function loadProject() {
+            const wsId = parseInt(document.getElementById('wsId').value);
+            const projId = parseInt(document.getElementById('projId').value);
+            if (!wsId || !projId) { alert('Enter both IDs'); return; }
+
+            if (wsId !== currentWsId || projId !== currentProjId) {
+                clearStorage();
+                currentWsId = wsId;
+                currentProjId = projId;
+            }
+
+            const stored = loadFromStorage();
+            if (stored && stored.tasks) {
+                try {
+                    const resp = await fetch(`${API_BASE}/project-data?workspace_id=${wsId}&project_id=${projId}`);
+                    const apiData = await resp.json();
+                    const merged = {
+                        project: apiData.project,
+                        workspace: apiData.workspace,
+                        tasks: stored.tasks,
+                        links: stored.links
+                    };
+                    renderGantt(merged);
+                    document.getElementById('status').textContent = 'Loaded from LocalStorage';
+                    return;
+                } catch (e) { }
+            }
+
+            try {
+                document.getElementById('status').textContent = 'Loading from API...';
+                const resp = await fetch(`${API_BASE}/project-data?workspace_id=${wsId}&project_id=${projId}`);
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                const data = await resp.json();
+                renderGantt(data);
+                saveToStorage();
+            } catch (err) {
+                console.error(err);
+                document.getElementById('status').textContent = 'Load error';
+            }
+        }
+
+        function resetStorage() {
+            clearStorage();
+            if (currentWsId && currentProjId) {
+                loadProject();
+            } else {
+                gantt.clearAll();
+                document.getElementById('status').textContent = 'Storage cleared';
+            }
+        }
+    </script>
+</body>
+
+</html>

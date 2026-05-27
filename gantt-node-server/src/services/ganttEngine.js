@@ -51,7 +51,7 @@ const jsDateToGantt = (date) => {
 };
 
 // ────────────────────────────────────────────────
-// WORK DAYS
+// WORK DAYS & HOLIDAYS VALIDATION
 // ────────────────────────────────────────────────
 const ISO_TO_JS = { 1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 6: 6, 7: 0 };
 
@@ -65,9 +65,6 @@ export const parseWorkDays = (weekendJson) => {
     return ALL.filter(d => !offDays.includes(d));
 };
 
-// ────────────────────────────────────────────────
-// WORKING DAY SNAPPING
-// ────────────────────────────────────────────────
 const snapToWorkingDay = (ganttDate, direction, workDays, holidays) => {
     if (!ganttDate) return ganttDate;
     const d = ganttToJsDate(ganttDate);
@@ -84,12 +81,48 @@ const snapToWorkingDay = (ganttDate, direction, workDays, holidays) => {
 
     const delta = direction === 'forward' ? 1 : -1;
     const candidate = new Date(d);
-    for (let i = 0; i < 14; i++) {
+    // Scan outward to find the closest active calendar block
+    for (let i = 0; i < 30; i++) {
         candidate.setDate(candidate.getDate() + delta);
         if (isWorking(candidate)) return jsDateToGantt(candidate);
     }
-    logger.warn(`snapToWorkingDay: no working day found for ${ganttDate}`);
     return ganttDate;
+};
+
+// ────────────────────────────────────────────────
+// NATIVE CYCLE DETECTION GUARD (DAG CHECK)
+// ────────────────────────────────────────────────
+const validateCircularLinks = (links) => {
+    const adjList = new Map();
+    links.forEach(l => {
+        if (!adjList.has(l.source_task_id)) adjList.set(l.source_task_id, []);
+        adjList.get(l.source_task_id).push(l.target_task_id);
+    });
+
+    const visited = new Set();
+    const recStack = new Set();
+
+    const hasCycle = (node) => {
+        if (recStack.has(node)) return true;
+        if (visited.has(node)) return false;
+
+        visited.add(node);
+        recStack.add(node);
+
+        const neighbors = adjList.get(node) || [];
+        for (const neighbor of neighbors) {
+            if (hasCycle(neighbor)) return true;
+        }
+
+        recStack.delete(node);
+        return false;
+    };
+
+    for (const node of adjList.keys()) {
+        if (hasCycle(node)) {
+            throw new Error(`Circular dependency detected in project link paths! Scheduling stopped.`);
+        }
+    }
 };
 
 // ────────────────────────────────────────────────
@@ -154,16 +187,20 @@ const enforceHierarchyExpand = (tasksGantt, currentMysqlMap) => {
 // ────────────────────────────────────────────────
 // NORMALISERS
 // ────────────────────────────────────────────────
-const normaliseTask = (t) => ({
-    id: t.id,
-    text: t.name || `Task ${t.id}`,
-    type: 'task',
-    parent: t.parent_id ?? 0,
-    start_date: t.start_date,
-    end_date: t.end_date,
-    ...(t.constraint_type ? { constraint_type: t.constraint_type } : {}),
-    ...(t.constraint_date ? { constraint_date: toGanttDate(t.constraint_date) } : {}),
-});
+const normaliseTask = (t, allTasks) => {
+    // Dynamically flag container summary items as 'project' type blocks
+    const isContainer = allTasks.some(child => child.parent_id === t.id);
+    return {
+        id: t.id,
+        text: t.name || `Task ${t.id}`,
+        type: isContainer ? 'project' : 'task',
+        parent: t.parent_id ?? 0,
+        start_date: t.start_date,
+        end_date: t.end_date,
+        ...(t.constraint_type ? { constraint_type: t.constraint_type } : {}),
+        ...(t.constraint_date ? { constraint_date: toGanttDate(t.constraint_date) } : {}),
+    };
+};
 
 const normaliseLink = (l) => ({
     id: l.id,
@@ -173,10 +210,10 @@ const normaliseLink = (l) => ({
 });
 
 // ────────────────────────────────────────────────
-// DHTMLX LINK SCHEDULING
+// DHTMLX LINK SCHEDULING WITH ESCAPE RE-SNAPPING
 // ────────────────────────────────────────────────
 const runLinkScheduling = ({ tasksGantt, links, config, triggeredTaskId }) => {
-    const normTasks = tasksGantt.map(normaliseTask);
+    const normTasks = tasksGantt.map(t => normaliseTask(t, tasksGantt));
     const normLinks = links.map(normaliseLink);
 
     const beforeMap = new Map(normTasks.map(t => [t.id, { start_date: t.start_date, end_date: t.end_date }]));
@@ -185,7 +222,7 @@ const runLinkScheduling = ({ tasksGantt, links, config, triggeredTaskId }) => {
         plugins: { auto_scheduling: true },
         config: {
             duration_unit: config.duration_unit || GANTT_DURATION_UNIT,
-            work_time: true,
+            work_time: config.restrict_to_working_days,
             auto_types: false,
             auto_scheduling: {
                 enabled: true,
@@ -212,8 +249,18 @@ const runLinkScheduling = ({ tasksGantt, links, config, triggeredTaskId }) => {
         gantt.autoSchedule();
     }
 
-    const afterTasks = gantt.serialize().data;
+    let afterTasks = gantt.serialize().data;
     gantt.destructor();
+
+    // POST-PROCESSOR SANITATION RULE: Force ALL shifted tasks back off non-working days
+    if (config.restrict_to_working_days) {
+        afterTasks = afterTasks.map(t => {
+            if (t.type === 'project') return t; // Let boundaries map cleanly later
+            const snappedStart = snapToWorkingDay(t.start_date, 'forward', workDays, config.holidays);
+            const snappedEnd = snapToWorkingDay(t.end_date, 'backward', workDays, config.holidays);
+            return { ...t, start_date: snappedStart, end_date: snappedEnd };
+        });
+    }
 
     const linkAdjustments = afterTasks
         .map(t => {
@@ -233,7 +280,7 @@ const runLinkScheduling = ({ tasksGantt, links, config, triggeredTaskId }) => {
 };
 
 // ────────────────────────────────────────────────
-// CONNECTED COMPONENT (Hierarchy + Links)
+// CONNECTED COMPONENT
 // ────────────────────────────────────────────────
 const getConnectedComponent = (startId, allTasks, allLinks) => {
     const graph = new Map();
@@ -309,7 +356,6 @@ const recalculateScope = ({
 }) => {
     let tasksForScheduling = [...tasksInScope];
 
-    // Snap only on actual user change
     if (config.restrict_to_working_days && triggeredTaskId && hasActualChange) {
         const task = tasksForScheduling.find(t => t.id === triggeredTaskId);
         if (task) {
@@ -400,16 +446,10 @@ const calculateProjectRange = (allTasks, adjustments, project) => {
 
     if (!range.minGantt || !range.maxGantt) return null;
 
-    const newStart = toMysqlDate(range.minGantt);
-    const newEnd = toMysqlDate(range.maxGantt);
-
-    const origStart = toComparable(toGanttDate(project.project_start));
-    const origEnd = toComparable(toGanttDate(project.project_end));
-
-    if (range.min < origStart || range.max > origEnd) {
-        return { start_at: newStart, due_at: newEnd };
-    }
-    return null;
+    return {
+        start_at: toMysqlDate(range.minGantt),
+        due_at: toMysqlDate(range.maxGantt)
+    };
 };
 
 // ────────────────────────────────────────────────
@@ -466,7 +506,6 @@ export const recalculateImpact = async ({
         );
     }
 
-    // DB-First: Always read from database (only override if dates explicitly passed)
     if (task_id && taskUpdates?.start_at && taskUpdates?.due_at) {
         const task = allTasks.find(t => t.id === task_id);
         if (task) {
@@ -481,6 +520,7 @@ export const recalculateImpact = async ({
         [workspace_id, finalProjectId]
     );
 
+    // Dynamic Database Flag Configurations Interventions
     const config = {
         work_days: workDays,
         holidays: GANTT_HOLIDAYS,
@@ -491,9 +531,11 @@ export const recalculateImpact = async ({
         restrict_to_working_days: !!project.restrict_tasks_to_working_days,
     };
 
-    const dbOriginalDates = new Map(allTasks.map(t => [t.id, { start_at: t.start_at, due_at: t.due_at }]));
+    // Protect our network loop calculation engine before initializing DHTMLX instances
+    validateCircularLinks(allLinks);
 
-    const hasActualChange = !!(taskUpdates?.start_at && taskUpdates?.due_at);
+    const dbOriginalDates = new Map(allTasks.map(t => [t.id, { start_at: t.start_at, due_at: t.due_at }]));
+    const hasActualChange = !!(taskUpdates?.start_at && taskUpdates?.due_at) || (!taskUpdates && !!task_id);
     let allAdjustments = [];
 
     if (task_id) {
@@ -513,7 +555,6 @@ export const recalculateImpact = async ({
         });
         allAdjustments = [...result.hierarchyAdjustments, ...result.linkAdjustments];
     } else {
-        // Full project mode
         const processed = new Set();
         const roots = allTasks.filter(t => !t.parent_id || t.parent_id === 0);
         for (const root of roots) {
@@ -555,8 +596,8 @@ export const recalculateImpact = async ({
     const projectResponse = calculateProjectRange(allTasks, finalAdjustments, project);
 
     return {
-        hierarchyAdjustments: finalAdjustments,
-        linkAdjustments: finalAdjustments,
+        hierarchyAdjustments: finalAdjustments.filter(a => a.id !== task_id),
+        linkAdjustments: finalAdjustments.filter(a => a.id !== task_id),
         impactedTaskIds: [...new Set(finalAdjustments.map(a => a.id))],
         project: projectResponse,
         triggeredTask
