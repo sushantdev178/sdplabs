@@ -584,11 +584,14 @@ export const recalculateImpact = async ({
     let triggeredTask = null;
     if (task_id) {
         const finalTask = allTasks.find(t => t.id === task_id);
+
         if (finalTask) {
             triggeredTask = {
                 id: task_id,
                 start_at: finalTask.start_at,
-                due_at: finalTask.due_at
+                due_at: finalTask.due_at,
+                constraint_type: finalTask.constraint_type || null,
+                constraint_date: finalTask.constraint_date || null
             };
         }
     }
@@ -596,8 +599,15 @@ export const recalculateImpact = async ({
     const projectResponse = calculateProjectRange(allTasks, finalAdjustments, project);
 
     return {
-        hierarchyAdjustments: finalAdjustments.filter(a => a.id !== task_id),
-        linkAdjustments: finalAdjustments.filter(a => a.id !== task_id),
+        hierarchyAdjustments: finalAdjustments.map(adj => {
+            const task = allTasks.find(t => t.id === adj.id);
+            return {
+                ...adj,
+                constraint_type: task?.constraint_type || null,
+                constraint_date: task?.constraint_date || null
+            };
+        }),
+        linkAdjustments: finalAdjustments,           // or filter if you want
         impactedTaskIds: [...new Set(finalAdjustments.map(a => a.id))],
         project: projectResponse,
         triggeredTask
@@ -625,10 +635,15 @@ export const getProjectData = async ({ workspace_id, project_id }) => {
     if (projectTaskIds.length > 0) {
         const placeholders = projectTaskIds.map(() => '?').join(',');
         tasks = await query(`
-            SELECT id, name, start_at, due_at, parent_id, constraint_type, constraint_date
-            FROM ph_tasks WHERE id IN (${placeholders}) AND workspace_id = ?
-            AND deleted_at IS NULL AND deleted_ancestor_id IS NULL
-            AND start_at IS NOT NULL AND due_at IS NOT NULL`,
+            SELECT id, name, start_at, due_at, parent_id, 
+                   constraint_type, constraint_date
+            FROM ph_tasks 
+            WHERE id IN (${placeholders}) 
+              AND workspace_id = ?
+              AND deleted_at IS NULL 
+              AND deleted_ancestor_id IS NULL
+              AND start_at IS NOT NULL 
+              AND due_at IS NOT NULL`,
             [...projectTaskIds, workspace_id]
         );
     }
@@ -658,8 +673,8 @@ export const getProjectData = async ({ workspace_id, project_id }) => {
             start_date: t.start_at,
             end_date: t.due_at,
             parent: t.parent_id || 0,
-            constraint_type: t.constraint_type,
-            constraint_date: t.constraint_date,
+            constraint_type: t.constraint_type,        // ← Must be here
+            constraint_date: t.constraint_date,        // ← Must be here
         })),
         links: links.map(l => ({
             id: l.id,
