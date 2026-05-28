@@ -223,6 +223,7 @@
 
             const parentIds = new Set(tasks.map(t => Number(t.parent)).filter(p => p > 0));
 
+            // Map tasks with proper type
             let ganttTasks = tasks.map(t => {
                 const hasChildren = parentIds.has(Number(t.id));
                 return {
@@ -237,24 +238,26 @@
                 };
             });
 
-            // Root wrapper
-            let globalMin = null, globalMax = null;
-            ganttTasks.forEach(t => {
-                if (t.start_date && (!globalMin || t.start_date < globalMin)) globalMin = t.start_date;
-                if (t.end_date && (!globalMax || t.end_date > globalMax)) globalMax = t.end_date;
-            });
+            // Create Project Root Wrapper using actual project dates
+            const projStart = mysqlToGantt(project.start_date || project.start_at);
+            const projEnd = mysqlToGantt(project.due_date || project.due_at);
 
             const rootTask = {
                 id: ROOT_ID,
-                text: 'Project Wrapper Container',
+                text: project.name || 'Project',
                 type: 'project',
-                start_date: globalMin,
-                end_date: globalMax,
+                start_date: projStart,
+                end_date: projEnd,
                 parent: 0,
                 open: true
             };
 
-            ganttTasks = ganttTasks.map(t => ({ ...t, parent: t.parent === 0 ? ROOT_ID : t.parent }));
+            // Re-parent top-level tasks under ROOT_ID
+            ganttTasks = ganttTasks.map(t => ({
+                ...t,
+                parent: t.parent === 0 ? ROOT_ID : t.parent
+            }));
+
             ganttTasks.push(rootTask);
 
             const ganttLinks = links.map(l => ({
@@ -264,6 +267,7 @@
                 type: linkTypeMap[l.type] || '0'
             }));
 
+            // Gantt Configuration
             gantt.config.duration_unit = 'day';
             gantt.config.work_time = project.restrict_tasks_to_working_days;
             gantt.config.auto_scheduling = {
@@ -274,7 +278,7 @@
             };
 
             gantt.config.columns = [
-                { name: "text", tree: true, width: 260, resize: true, label: "Task name" },
+                { name: "text", tree: true, width: 280, resize: true, label: "Task name" },
                 { name: "start_date", align: "center", width: 110, label: "Start Date" },
                 { name: "end_date", align: "center", width: 110, label: "End Date" },
                 {
@@ -300,6 +304,7 @@
 
             gantt.parse({ data: ganttTasks, links: ganttLinks });
 
+            // Link Validation
             gantt.attachEvent("onBeforeLinkAdd", function (id, link) {
                 return validateLink(link.source, link.target);
             });

@@ -317,29 +317,52 @@ const getConnectedComponent = (startId, allTasks, allLinks) => {
 // FETCH PROJECT TASK IDS
 // ────────────────────────────────────────────────
 async function fetchProjectTaskIds(workspace_id, project_id) {
+    // 1. Get root tasks directly assigned to this project
     const rootRows = await query(
-        `SELECT task_id FROM ph_project_tasks WHERE workspace_id = ? AND project_id = ?`,
+        `SELECT task_id FROM ph_project_tasks 
+         WHERE workspace_id = ? AND project_id = ?`,
         [workspace_id, project_id]
     );
-    const rootIds = rootRows.map(r => r.task_id);
-    if (rootIds.length === 0) return [];
 
-    const allIds = new Set(rootIds);
-    let currentLevel = [...rootIds];
+    let allIds = new Set(rootRows.map(r => r.task_id));
 
+    if (allIds.size === 0) {
+        // If no direct assignment, try to find root tasks with parent_id = 0 in this project context
+        const fallbackRoots = await query(
+            `SELECT id FROM ph_tasks 
+             WHERE workspace_id = ? 
+               AND parent_id = 0 
+               AND deleted_at IS NULL 
+               AND deleted_ancestor_id IS NULL
+               AND start_at IS NOT NULL 
+               AND due_at IS NOT NULL
+             LIMIT 100`,
+            [workspace_id]
+        );
+        fallbackRoots.forEach(r => allIds.add(r.id));
+    }
+
+    let currentLevel = [...allIds];
+
+    // 2. Recursively fetch ALL descendants
     while (currentLevel.length > 0) {
         const placeholders = currentLevel.map(() => '?').join(',');
         const childRows = await query(
             `SELECT id FROM ph_tasks
-             WHERE workspace_id = ? AND parent_id IN (${placeholders})
-               AND deleted_at IS NULL AND deleted_ancestor_id IS NULL
-               AND start_at IS NOT NULL AND due_at IS NOT NULL`,
+             WHERE workspace_id = ? 
+               AND parent_id IN (${placeholders})
+               AND deleted_at IS NULL 
+               AND deleted_ancestor_id IS NULL
+               AND start_at IS NOT NULL 
+               AND due_at IS NOT NULL`,
             [workspace_id, ...currentLevel]
         );
+
         const newIds = childRows.map(r => r.id).filter(id => !allIds.has(id));
         newIds.forEach(id => allIds.add(id));
         currentLevel = newIds;
     }
+
     return [...allIds];
 }
 
@@ -631,6 +654,7 @@ export const getProjectData = async ({ workspace_id, project_id }) => {
     const workDays = parseWorkDays(workspace?.weekend);
 
     const projectTaskIds = await fetchProjectTaskIds(workspace_id, project_id);
+    return projectTaskIds;
     let tasks = [];
     if (projectTaskIds.length > 0) {
         const placeholders = projectTaskIds.map(() => '?').join(',');
