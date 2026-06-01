@@ -448,16 +448,37 @@
                 return "";
             };
 
+
+            // ─────────────────────────────────────────────────────────
+            // 🛠️ FIXING HOOKS FOR GAP MODE & SUBTASK MOVEMENT FLAGS
+            // ─────────────────────────────────────────────────────────
             gantt.config.duration_unit = 'day';
             gantt.config.work_time = project.restrict_tasks_to_working_days;
+
+            // Flag 1: Core Auto-Scheduling master toggle
             gantt.config.auto_scheduling = isGlobalProjectAutoScheduleEnabled;
-            gantt.config.auto_scheduling_move_projects = true;
             gantt.config.auto_scheduling_strict = true;
+
+            // Flag 2: Handle "move_subtasks_with_parent"
+            // This unblocks manual dragging of parent containers on your screen
+            gantt.config.drag_project = true;
+            gantt.config.resize_project = true;
+            // This tells the auto-scheduler to shift nested subtasks with the parent
+            gantt.config.auto_scheduling_descendant_links = !!project.move_subtasks_with_parent;
+
+            // Flag 3: Handle "auto_schedule_tasks_gap"
+            // If mode is 'compress', move_asap_tasks forces tasks to collapse gaps (ASAP)
+            gantt.config.auto_scheduling_compatibility = true;
+            if (project.auto_schedule_tasks_gap === 'compress') {
+                gantt.config.auto_scheduling_move_projects = true; // pull tasks forward
+            } else {
+                gantt.config.auto_scheduling_move_projects = false; // preserve layout gaps
+            }
+
             gantt.config.schedule_from_end = false;
             gantt.config.project_end = project.due_date
                 ? mysqlToGantt(project.due_date)
                 : null;
-
             gantt.config.columns = [
                 { name: "text", tree: true, width: 260, resize: true, label: "Task name" },
                 {

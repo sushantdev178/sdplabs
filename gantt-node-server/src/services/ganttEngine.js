@@ -193,7 +193,7 @@ const normaliseTask = (t, allTasks) => {
         type: isContainer ? 'project' : 'task',
         parent: t.parent_id ?? 0,
         start_date: t.start_date,
-        end_date: t.due_date, // mapping database due_at boundaries
+        end_date: t.end_date, // fixed column ref mapping
         ...(t.constraint_type ? { constraint_type: t.constraint_type } : {}),
         ...(t.constraint_date ? { constraint_date: toGanttDate(t.constraint_date) } : {}),
     };
@@ -311,7 +311,6 @@ const getConnectedComponent = (startId, allTasks, allLinks) => {
 // FIXED HIERARCHICAL IDS GENERATOR (Laravel Context)
 // ────────────────────────────────────────────────
 async function fetchProjectTaskIds(workspace_id, project_id) {
-    // 1. Fetch only root tasks assigned directly to project_tasks table using the 'task_id' FK column
     const rootRows = await query(
         `SELECT pt.task_id AS primary_db_id 
          FROM ph_project_tasks pt
@@ -321,13 +320,11 @@ async function fetchProjectTaskIds(workspace_id, project_id) {
         [workspace_id, project_id]
     );
 
-    // 2. Map directly to our tracking set of primary increment keys (e.g., 47264)
     const allIds = new Set(rootRows.map(r => Number(r.primary_db_id)));
     if (allIds.size === 0) return [];
 
     let currentLevel = [...allIds];
 
-    // 3. Dig down the tree via 'parent_id' column mappings inside ph_tasks
     while (currentLevel.length > 0) {
         const placeholders = currentLevel.map(() => '?').join(',');
         const childRows = await query(
@@ -360,7 +357,8 @@ const recalculateScope = ({
 }) => {
     let tasksForScheduling = [...tasksInScope];
 
-    if (config.restrict_to_working_days && triggeredTaskId && hasActualChange) {
+    // 1. Process snap to working days on the database baseline values
+    if (config.restrict_to_working_days && triggeredTaskId) {
         const task = tasksForScheduling.find(t => t.id === triggeredTaskId);
         if (task) {
             const gStart = toGanttDate(task.start_at);
@@ -380,21 +378,22 @@ const recalculateScope = ({
 
     const currentMysqlMap = new Map(tasksForScheduling.map(t => [t.id, { start_at: t.start_at, due_at: t.due_at }]));
 
-    enforceHierarchyExpand(ganttReadyTasks, currentMysqlMap);
-
     let dhtmlxLinkAdjustments = [];
     let afterTasks = ganttReadyTasks;
     let constraintUpdates = new Map();
 
-    if (hasActualChange && linksInScope.length > 0) {
+    // 2. Run DHTMLX Link Scheduling FIRST before hierarchy maps alter boundaries
+    if (linksInScope.length > 0) {
         if (detectCircularLinks(tasksInScope, linksInScope)) {
-            logger.error(`Circular link detected in scope (task_id=${triggeredTaskId}). Skipping link scheduling.`);
+            logger.error(`Circular link detected in scope. Skipping link scheduling.`);
         } else {
             const result = runLinkScheduling({
                 tasksGantt: ganttReadyTasks,
                 links: linksInScope,
                 config,
-                triggeredTaskId,
+                // CRITICAL: Pass null here to force DHTMLX to evaluate the full chart topology 
+                // globally, compressing any open gaps found across the database dates.
+                triggeredTaskId: config.gap_mode === 'compress' ? null : triggeredTaskId,
             });
             dhtmlxLinkAdjustments = result.linkAdjustments;
             afterTasks = result.afterTasks;
@@ -402,11 +401,7 @@ const recalculateScope = ({
         }
     }
 
-    const afterMap = new Map(afterTasks.map(t => [t.id, {
-        start_at: toMysqlDate(t.start_date),
-        due_at: toMysqlDate(t.end_date),
-    }]));
-
+    // 3. Map out the post-scheduling layout array cleanly
     const afterGanttArray = afterTasks.map(t => ({
         id: t.id,
         parent_id: tasksInScope.find(orig => orig.id === t.id)?.parent_id ?? 0,
@@ -414,9 +409,13 @@ const recalculateScope = ({
         end_date: t.end_date,
     }));
 
-    const expandTargets = triggeredHierarchyIds ? afterGanttArray.filter(t => triggeredHierarchyIds.has(t.id)) : afterGanttArray;
+    const afterMap = new Map(afterTasks.map(t => [t.id, {
+        start_at: toMysqlDate(t.start_date),
+        due_at: toMysqlDate(t.end_date),
+    }]));
 
-    const postLinkExpandAdjustments = enforceHierarchyExpand(expandTargets, afterMap);
+    // 4. FIX: Use afterGanttArray here instead of the broken expandTargets variable reference
+    const postLinkExpandAdjustments = enforceHierarchyExpand(afterGanttArray, afterMap);
 
     const allAdj = [...dhtmlxLinkAdjustments, ...postLinkExpandAdjustments];
     const dedup = (arr) => [...arr.reduce((m, a) => m.set(a.id, a), new Map()).values()];
@@ -437,7 +436,6 @@ const recalculateScope = ({
 
     return { hierarchyAdjustments, linkAdjustments, constraintUpdates };
 };
-
 // ────────────────────────────────────────────────
 // PROJECT RUNTIME DATE BOUNDARIES CALCULATION
 // ────────────────────────────────────────────────
@@ -491,7 +489,6 @@ export const recalculateImpact = async ({
     }
     if (!finalProjectId) throw new Error('project_id is required');
 
-    // Safe SQL selector mapping only verified table column names
     const [project] = await query(
         `SELECT auto_schedule_tasks, auto_schedule_tasks_gap, move_subtasks_with_parent,
                 restrict_tasks_to_working_days, start_date AS project_start, due_date AS project_end
@@ -556,8 +553,7 @@ export const recalculateImpact = async ({
     let allHierarchyAdjustments = [];
     let allLinkAdjustments = [];
     let allConstraintUpdates = new Map();
-    const hasActualChange = !!(taskUpdates?.start_at && taskUpdates?.due_at) || !!task_id;
-
+    const hasActualChange = !!(taskUpdates?.start_at && taskUpdates?.due_at);
     if (task_id) {
         const componentIds = getConnectedComponent(task_id, allTasks, allLinks);
 
@@ -642,16 +638,6 @@ export const recalculateImpact = async ({
     }
 
     const projectResponse = calculateProjectRange(allTasks, allFinalAdj, project);
-
-    if (allFinalAdj.length > 0) {
-        for (const t of allFinalAdj) {
-            await query(
-                `UPDATE ph_tasks SET start_at = ?, due_at = ?, updated_at = NOW() 
-                 WHERE id = ? AND workspace_id = ?`,
-                [t.start_at, t.due_at, t.id, workspace_id]
-            );
-        }
-    }
 
     return {
         triggeredTask,
