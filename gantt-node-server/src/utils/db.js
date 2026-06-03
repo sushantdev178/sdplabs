@@ -1,5 +1,4 @@
 import mysql from 'mysql2/promise';
-import logger from './logger.js';
 import {
     DB_HOST,
     DB_PORT,
@@ -25,7 +24,6 @@ export const initDb = () => {
             keepAliveInitialDelay: 0,
             dateStrings: true,
         });
-        logger.info('MySQL connection pool created');
     }
     return pool;
 };
@@ -34,7 +32,7 @@ export const query = async (sql, params = []) => {
     const start = Date.now();
     try {
         const [rows] = await pool.query(sql, params);
-        logger.debug('DB Query', {
+        console.info('DB Query', {
             sql,
             params,
             duration: `${Date.now() - start}ms`,
@@ -42,7 +40,7 @@ export const query = async (sql, params = []) => {
         });
         return rows;
     } catch (error) {
-        logger.error('DB Query Error', { sql, params, error: error.message });
+        console.error('DB Query Error', { sql, params, error: error.message });
         throw error;
     }
 };

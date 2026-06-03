@@ -188,7 +188,8 @@
 
             const [, y, mo, d, h = '00', min = '00', sec = '00'] = m;
 
-            return new Date(y, mo - 1, d, h, min, sec);
+            // return new Date(y, mo - 1, d, h, min, sec);
+            return new Date(y, mo - 1, d);
         }
 
         function ganttToMysql(dateValue) {
@@ -503,8 +504,8 @@
                             (task.constraint_type === 'alap' ? '#ff9800' : '#2196f3');
 
                         return `<span style="color:${color}; font-weight:600; cursor:pointer;" onclick="editConstraint(${task.id})">
-        ${task.constraint_type.toUpperCase()} ${dateStr ? `(${dateStr})` : ''}
-    </span>`;
+                ${task.constraint_type.toUpperCase()} ${dateStr ? `(${dateStr})` : ''}
+            </span>`;
                     }
                 },
                 { name: "add", width: 44 }

@@ -15,9 +15,8 @@ export const DB_NAME = 'proofhub2_v5_indev';
 
 // ─── Gantt Scheduling Defaults ────────────────────────────────────────────────
 export const GANTT_DURATION_UNIT = 'day';           // 'day' or 'hour'
-export const GANTT_HOLIDAYS = ['2026-03-30'];                   // e.g., ['2026-12-25']
 export const GANTT_AUTO_SCHEDULING_MODE = 'auto';   // 'auto' or 'manual'
-export const GANTT_MANAGE_LINKED_HIERARCHIES = true; // or false
+export const GANTT_MANAGE_LINKED_HIERARCHIES = false; // or false
 
 
 // ─── Logging ─────────────────────────────────────────────────────────────────

@@ -1,6 +1,5 @@
 import express from 'express';
 import ganttRoutes from './routes/gantt.js';
-import logger from './utils/logger.js';
 import { v4 as uuidv4 } from 'uuid';
 import {
     PORT,
@@ -13,21 +12,12 @@ import cors from 'cors';
 
 const app = express();
 
+// 1. Core Global Configuration
 app.use(cors());
 
-
-// ─── Middleware ────────────────────────────────────────────────────────────────
-app.use(express.json({ limit: JSON_LIMIT }));
-
-// Request ID middleware
+// 2. Request ID Generator & Request/Response Logger (Moved to top)
 app.use((req, res, next) => {
-    req.id = uuidv4().slice(0, 8);
-    res.setHeader('X-Request-Id', req.id);
-    next();
-});
-
-// Request/Response logger
-app.use((req, res, next) => {
+    req.id = uuidv4(); // FIX: Explicitly assign the UUID to the request object
     const start = Date.now();
     const { method, originalUrl, body, id } = req;
 
@@ -39,48 +29,60 @@ app.use((req, res, next) => {
 
     res.on('finish', () => {
         const duration = Date.now() - start;
-        logger.info(`${method} ${originalUrl}`, {
-            requestId: id,
-            status: res.statusCode,
-            duration: `${duration}ms`,
-            requestBody: method !== 'GET' ? body : undefined,
-            responseBody: res.locals.responseBody
-        });
+        console.log(`[${new Date().toISOString()}] [${id}] ${method} ${originalUrl} - ${res.statusCode} - ${duration}ms`);
     });
 
     next();
 });
 
-// ─── Routes ───────────────────────────────────────────────────────────────────
+// 3. Body Parsers & Syntax Interceptors
+app.use(express.json({ limit: JSON_LIMIT }));
+
+app.use((err, req, res, next) => {
+    // CRITICAL FIX: Direct console logging ensures visibility even if the logger object has issues
+    console.error('────────────────────────────────────────────────────────');
+    console.error('🚨 [CRITICAL APPLICATION ERROR]:', err.message);
+    console.error('📁 STACK TRACE:\n', err.stack);
+    console.error('────────────────────────────────────────────────────────');
+
+    if (logger && typeof logger.error === 'function') {
+        try {
+            logger.error(`Server error: ${err.message}`, {
+                requestId: req.id,
+                stack: err.stack,
+                url: req.originalUrl
+            });
+        } catch (e) {
+            console.error('Fallback Logger failing internally:', e.message);
+        }
+    }
+
+    res.status(500).json({ success: false, message: 'Internal server error' });
+});
+
+// 4. Application Route Mounting
 app.get('/health', (req, res) => {
     res.json({ success: true, service: SERVICE_NAME, status: 'running' });
 });
 
 app.use('/api/gantt', ganttRoutes);
 
-// ─── 404 Handler ──────────────────────────────────────────────────────────────
+// 5. Fallback 404 Route Handler
 app.use((req, res) => {
-    logger.warn(`Route not found: ${req.method} ${req.originalUrl}`, { requestId: req.id });
     res.status(404).json({ success: false, message: `Route ${req.method} ${req.url} not found` });
 });
 
-// ─── Error Handler ────────────────────────────────────────────────────────────
+// 6. Global Catch-All Error Handler
 app.use((err, req, res, next) => {
-    logger.error(`Server error: ${err.message}`, {
-        requestId: req.id,
-        stack: err.stack,
-        url: req.originalUrl
-    });
     res.status(500).json({ success: false, message: 'Internal server error' });
 });
 
-// ─── Start ────────────────────────────────────────────────────────────────────
+// 7. Core Process Boot
 app.listen(PORT, () => {
-    logger.info(`${SERVICE_NAME} started on port ${PORT}`);
     console.log(`\n✅  ${SERVICE_NAME} is running`);
     console.log(`    URL  : ${BASE_URL}`);
     console.log(`    Logs : ${LOG_DIR}/gantt-YYYY-MM-DD.log`);
     console.log(`\n    GET  /health                  — health check`);
-    console.log(`    POST /api/gantt/recalculate    — run auto-scheduling`);
+    console.log(`    POST /api/gantt/calculate     — run auto-scheduling`); // Documentation update
     console.log(`    POST /api/gantt/validate-link  — validate link before save\n`);
 });
