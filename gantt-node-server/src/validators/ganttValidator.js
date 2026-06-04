@@ -1,42 +1,85 @@
 // src/validators/ganttValidator.js
-import { query } from '../utils/db.js';
 
-export const validateCalculatePayload = async (body) => {
-    const { workspace_id, project_id, task_id } = body || {};
+/**
+ * Validate calculate endpoint request
+ */
+export const validateCalculateRequest = (body) => {
+    const errors = [];
 
-    // Rule 1: Structural Null Validation
-    if (!workspace_id || isNaN(Number(workspace_id))) {
-        throw new Error('Validation failed: workspace_id is required and must be a valid number');
+    if (!body.workspace_id) {
+        errors.push('workspace_id is required');
+    } else if (isNaN(parseInt(body.workspace_id))) {
+        errors.push('workspace_id must be a number');
     }
-    if (!project_id && !task_id) {
-        throw new Error('Validation failed: Either project_id or task_id must be provided to determine layout context');
+
+    if (!body.project_id && !body.task_id) {
+        errors.push('Either project_id or task_id is required');
     }
 
-    // Rule 2: Explicit Task Exists & Belongs to Workspace Check
-    if (task_id) {
-        const [taskRow] = await query(
-            `SELECT workspace_id FROM ph_tasks WHERE id = ? AND deleted_at IS NULL LIMIT 1`,
-            [task_id]
-        );
+    if (body.project_id && isNaN(parseInt(body.project_id))) {
+        errors.push('project_id must be a number');
+    }
 
-        if (!taskRow) {
-            throw new Error(`Validation failed: Task ${task_id} does not exist in the system`);
+    // CRITICAL: start_at and due_at must come with task_id
+    if ((body.start_at || body.due_at) && !body.task_id) {
+        errors.push('task_id is required when start_at or due_at is provided');
+    }
+
+    // If task_id is provided, validate dates
+    if (body.task_id) {
+        if (isNaN(parseInt(body.task_id))) {
+            errors.push('task_id must be a number');
         }
-        if (Number(taskRow.workspace_id) !== Number(workspace_id)) {
-            throw new Error(`Validation failed: Task ${task_id} does not belong to Workspace ${workspace_id}`);
+
+        // start_at and due_at must both be provided if one is
+        if (body.start_at && !body.due_at) {
+            errors.push('due_at is required when start_at is provided');
+        }
+        if (body.due_at && !body.start_at) {
+            errors.push('start_at is required when due_at is provided');
+        }
+
+        if (body.start_at) {
+            const dateRegex = /^\d{4}-\d{2}-\d{2}( \d{2}:\d{2}:\d{2})?$/;
+            if (!dateRegex.test(body.start_at)) {
+                errors.push('start_at must be in format: YYYY-MM-DD HH:MM:SS');
+            }
+        }
+
+        if (body.due_at) {
+            const dateRegex = /^\d{4}-\d{2}-\d{2}( \d{2}:\d{2}:\d{2})?$/;
+            if (!dateRegex.test(body.due_at)) {
+                errors.push('due_at must be in format: YYYY-MM-DD HH:MM:SS');
+            }
         }
     }
 
-    // Rule 3: Explicit Project Exists & Belongs to Workspace Check
-    if (project_id) {
-        const [projectWorkspaceCheck] = await query(
-            `SELECT id FROM ph_projects WHERE id = ? AND workspace_id = ? AND deleted_at IS NULL LIMIT 1`,
-            [project_id, workspace_id]
-        );
-        if (!projectWorkspaceCheck) {
-            throw new Error(`Validation failed: Project ${project_id} does not belong to Workspace ${workspace_id}`);
-        }
+    return {
+        isValid: errors.length === 0,
+        errors
+    };
+};
+
+/**
+ * Validate project data request
+ */
+export const validateProjectDataRequest = (query) => {
+    const errors = [];
+
+    if (!query.workspace_id) {
+        errors.push('workspace_id is required');
+    } else if (isNaN(parseInt(query.workspace_id))) {
+        errors.push('workspace_id must be a number');
     }
 
-    return true;
+    if (!query.project_id) {
+        errors.push('project_id is required');
+    } else if (isNaN(parseInt(query.project_id))) {
+        errors.push('project_id must be a number');
+    }
+
+    return {
+        isValid: errors.length === 0,
+        errors
+    };
 };

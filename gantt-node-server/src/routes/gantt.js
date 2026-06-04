@@ -1,9 +1,13 @@
+// src/routes/gantt.js
 import { Router } from 'express';
-import { recalculateImpact, fetchProjectData, validateTaskLink } from '../controllers/ganttController.js';
+import { calculate, getProject } from '../controllers/ganttController.js';
 
 const router = Router();
-router.post('/calculate', recalculateImpact);
-router.post('/validate-link', validateTaskLink);
-router.get('/project-data', fetchProjectData);
+
+// POST /api/gantt/calculate - Calculate impact of task date changes
+router.post('/calculate', calculate);
+
+// GET /api/gantt/project-data - Get project data for frontend
+router.get('/project-data', getProject);
 
 export default router;

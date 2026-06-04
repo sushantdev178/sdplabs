@@ -1,65 +1,86 @@
-import { recalculateImpact as recalculateImpactService, getProjectData } from '../services/ganttEngine.js';
-import { validateCalculatePayload } from '../validators/ganttValidator.js';
+// src/controllers/ganttController.js
+import { recalculateImpact, getProjectData } from '../services/ganttEngine.js';
+import { successResponse, errorResponse, validationError } from '../utils/response.js';
+import { validateCalculateRequest, validateProjectDataRequest } from '../validators/ganttValidator.js';
 
-export const recalculateImpact = async (req, res, next) => {
+/**
+ * Calculate impact of task date changes
+ * POST /api/gantt/calculate
+ */
+export const calculate = async (req, res) => {
     try {
-        // 1. Run custom validation block (mimics $request->validate())
-        await validateCalculatePayload(req.body);
-
         const { workspace_id, project_id, task_id, start_at, due_at } = req.body;
-        const taskUpdates = (start_at && due_at) ? { start_at, due_at } : undefined;
 
-        // 2. Execute calculation safely knowing data integrity is secured
-        const result = await recalculateImpactService({
-            workspace_id: Number(workspace_id),
-            project_id: project_id ? Number(project_id) : undefined,
-            task_id: task_id ? Number(task_id) : undefined,
-            taskUpdates,
+        // Validate request
+        const validation = validateCalculateRequest(req.body);
+        if (!validation.isValid) {
+            return validationError(res, validation.errors);
+        }
+
+        // Prepare task updates if provided
+        const taskUpdates = task_id && start_at ? {
+            start_at,
+            due_at: due_at || start_at
+        } : null;
+
+        // Calculate impact
+        const result = await recalculateImpact({
+            workspace_id: parseInt(workspace_id),
+            project_id: project_id ? parseInt(project_id) : null,
+            task_id: task_id ? parseInt(task_id) : null,
+            taskUpdates
         });
 
-        return res.json({
+        // Return in format matching frontend expectations
+        return res.status(200).json({
             success: true,
-            message: 'Impact recalculation complete',
-            data: result,
+            message: result.message || "Impact recalculation complete",
+            data: result.data
         });
     } catch (error) {
-        // 3. Catch custom validation errors and return a clean 400 Bad Request
-        if (error.message.startsWith('Validation failed:')) {
-            return res.status(400).json({ error: error.message });
-        }
-        next(error);
+        console.error('Calculate endpoint error:', error);
+        return res.status(500).json({
+            success: false,
+            message: `Calculation failed: ${error.message}`,
+            error: {
+                type: error.constructor.name,
+                message: error.message
+            }
+        });
     }
 };
 
-// ganttController.js
-
-export const fetchProjectData = async (req, res, next) => {
+/**
+ * Get project data for frontend
+ * GET /api/gantt/project-data
+ */
+export const getProject = async (req, res) => {
     try {
         const { workspace_id, project_id } = req.query;
-        if (!workspace_id || !project_id) {
-            return res.status(400).json({ error: 'workspace_id and project_id are required' });
+
+        // Validate request
+        const validation = validateProjectDataRequest(req.query);
+        if (!validation.isValid) {
+            return validationError(res, validation.errors);
         }
 
+        // Get project data
         const data = await getProjectData({
-            workspace_id: Number(workspace_id),
-            project_id: Number(project_id)
+            workspace_id: parseInt(workspace_id),
+            project_id: parseInt(project_id)
         });
 
-        return res.json(data);
+        // Return the data directly (frontend expects this format)
+        return res.status(200).json(data);
     } catch (error) {
-        // Intercept your explicit service errors cleanly
-        if (error.message.includes('not found') || error.message.startsWith('Validation failed:')) {
-            return res.status(404).json({
-                success: false,
-                error: error.message
-            });
-        }
-
-        // Pass actual unexpected operational crashes to your global console/logger middleware
-        next(error);
+        console.error('Get project endpoint error:', error);
+        return res.status(500).json({
+            success: false,
+            message: `Failed to get project data: ${error.message}`,
+            error: {
+                type: error.constructor.name,
+                message: error.message
+            }
+        });
     }
-};
-
-export const validateTaskLink = async (req, res, next) => {
-    // keep existing implementation
 };
