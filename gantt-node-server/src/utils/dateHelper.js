@@ -1,68 +1,74 @@
 // src/utils/dateHelper.js
 
-const ISO_TO_JS = { 1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 6: 6, 7: 0 };
+// API/Laravel backend numbering: 1=Sat, 2=Mon, 3=Tue, 4=Wed, 5=Thu, 6=Fri, 7=Sun
+// JS/Gantt numbering:              0=Sun, 1=Mon, 2=Tue, 3=Wed, 4=Thu, 5=Fri, 6=Sat
+// Backend: 1=Sun,2=Mon,3=Tue,4=Wed,5=Thu,6=Fri,7=Sat  →  JS: 0=Sun,1=Mon,2=Tue,3=Wed,4=Thu,5=Fri,6=Sat
+const API_TO_JS = { 1: 0, 2: 1, 3: 2, 4: 3, 5: 4, 6: 5, 7: 6 };
 
 /**
- * Convert MySQL date to DHTMLX Gantt format
- * Input: "2025-05-04 10:30:00" or "2025-05-04"
- * Output: "04-05-2025 10:30"
+ * Convert MySQL date to DHTMLX Gantt format.
+ * MUST match gantt.config.date_format = "%Y-%m-%d %H:%i:%s" exactly.
+ * Input:  "2025-05-04 10:30:00" or "2025-05-04"
+ * Output: "2025-05-04 10:30:00"
+ *
+ * NOTE: We keep YYYY-MM-DD so Gantt's date_format "%Y-%m-%d %H:%i:%s" can
+ * parse it correctly without any day/month swap risk.
  */
 export const toGanttDate = (str) => {
     if (!str) return null;
-    const m = str.match(/^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2}))?/);
+    const m = str.match(/^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?)?/);
     if (!m) return null;
-    const [, y, mo, d, h = '00', min = '00'] = m;
-    return `${d}-${mo}-${y} ${h}:${min}`;
+    const [, y, mo, d, h = '00', min = '00', sec = '00'] = m;
+    return `${y}-${mo}-${d} ${h}:${min}:${sec}`;
 };
 
 /**
- * Convert DHTMLX Gantt format to MySQL date
- * Input: "04-05-2025 10:30"
+ * Convert DHTMLX Gantt format back to MySQL date.
+ * Input:  "2025-05-04 10:30:00"
  * Output: "2025-05-04 10:30:00"
  */
 export const toMysqlDate = (ganttStr) => {
     if (!ganttStr) return null;
-    const m = ganttStr.match(/^(\d{2})-(\d{2})-(\d{4}) (\d{2}):(\d{2})/);
+    // Accept both "YYYY-MM-DD HH:MM:SS" and "YYYY-MM-DD HH:MM"
+    const m = ganttStr.match(/^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})(?::(\d{2}))?/);
     if (!m) return null;
-    const [, d, mo, y, h, min] = m;
-    return `${y}-${mo}-${d} ${h}:${min}:00`;
+    const [, y, mo, d, h, min, sec = '00'] = m;
+    return `${y}-${mo}-${d} ${h}:${min}:${sec}`;
 };
 
 /**
- * Convert DHTMLX date to comparable format for sorting/comparison
- * Input: "04-05-2025 10:30"
- * Output: "2025-05-04 10:30"
+ * Convert DHTMLX date to comparable format for sorting/comparison.
+ * Since gantt format is now "YYYY-MM-DD HH:MM:SS", this is a direct passthrough.
+ * Input:  "2025-05-04 10:30:00"
+ * Output: "2025-05-04 10:30:00"
  */
 export const toComparable = (ganttDate) => {
     if (!ganttDate) return null;
-    const m = ganttDate.match(/^(\d{2})-(\d{2})-(\d{4}) (\d{2}:\d{2})/);
-    if (!m) return null;
-    const [, d, mo, y, time] = m;
-    return `${y}-${mo}-${d} ${time}`;
+    return ganttDate.slice(0, 16); // "YYYY-MM-DD HH:MM" — enough for comparison
 };
 
 /**
- * Convert DHTMLX date string to JavaScript Date object
- * Input: "04-05-2025 10:30"
+ * Convert DHTMLX date string to JavaScript Date object.
+ * Input:  "2025-05-04 10:30:00"
  * Output: Date object
  */
 export const ganttToJsDate = (ganttDate) => {
     if (!ganttDate) return null;
-    const m = ganttDate.match(/^(\d{2})-(\d{2})-(\d{4}) (\d{2}):(\d{2})/);
+    const m = ganttDate.match(/^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})/);
     if (!m) return null;
-    const [, d, mo, y, h, min] = m;
+    const [, y, mo, d, h, min] = m;
     return new Date(+y, +mo - 1, +d, +h, +min);
 };
 
 /**
- * Convert JavaScript Date to DHTMLX Gantt format
- * Input: Date object
- * Output: "04-05-2025 10:30"
+ * Convert JavaScript Date to DHTMLX Gantt format.
+ * Input:  Date object
+ * Output: "2025-05-04 10:30:00"
  */
 export const jsDateToGantt = (date) => {
     if (!date) return null;
     const pad = n => String(n).padStart(2, '0');
-    return `${pad(date.getDate())}-${pad(date.getMonth() + 1)}-${date.getFullYear()} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:00`;
 };
 
 /**
@@ -90,7 +96,7 @@ export const parseWorkDays = (weekendJson) => {
 
     // Extract weekend days and convert from ISO to JS format
     const offDays = (parsed?.weekend ?? [])
-        .map(d => ISO_TO_JS[d])
+        .map(d => API_TO_JS[d])
         .filter(d => d !== undefined);
 
     // Return working days (all days except weekends)

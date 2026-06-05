@@ -7,12 +7,14 @@ const require = createRequire(import.meta.url);
 const { Gantt } = require('@dhx/gantt-node');
 
 /**
- * Normalize database task to DHTMLX format
+ * Normalize database task to DHTMLX format.
+ * Always use type 'task' — auto_types config promotes parents automatically,
+ * matching frontend behavior exactly.
  */
-const normaliseTask = (t, allTasks) => ({
+const normaliseTask = (t) => ({
     id: t.id,
     text: t.name || `Task ${t.id}`,
-    type: allTasks.some(child => child.parent_id === t.id) ? 'project' : 'task',
+    type: 'task',
     parent: t.parent_id ?? 0,
     start_date: t.start_date,
     end_date: t.end_date,
@@ -38,7 +40,7 @@ const normaliseLink = (l) => ({
  */
 export const runLinkScheduling = ({ tasksGantt, links, config, triggeredTaskId }) => {
     try {
-        const normTasks = tasksGantt.map(t => normaliseTask(t, tasksGantt));
+        const normTasks = tasksGantt.map(t => normaliseTask(t));
         const normLinks = links.map(normaliseLink);
 
         // Store before state for comparison
@@ -56,9 +58,16 @@ export const runLinkScheduling = ({ tasksGantt, links, config, triggeredTaskId }
                 marker: true
             },
             config: {
-                date_format: "%d-%m-%Y %H:%i",
+                // MUST match toGanttDate output format and frontend date_format exactly
+                date_format: "%Y-%m-%d %H:%i:%s",
                 duration_unit: config.duration_unit || GANTT_DURATION_UNIT,
                 work_time: config.restrict_to_working_days || false,
+
+                // auto_types: auto-promote parents to project type (matches frontend)
+                auto_types: true,
+
+                // drag_project: move subtasks with parent (configurable)
+                drag_project: !!config.move_subtasks_with_parent,
 
                 // CRITICAL: Match frontend auto_scheduling config exactly
                 auto_scheduling: {
@@ -75,7 +84,9 @@ export const runLinkScheduling = ({ tasksGantt, links, config, triggeredTaskId }
         });
 
         // Apply work days configuration
-        const workDays = config.work_days || [1, 2, 3, 4, 5];
+        // config.work_days arrives already converted to JS day numbers via parseWorkDays()
+        // which uses API_TO_JS map (1=Sat->6, 2=Mon->1, ... 7=Sun->0)
+        const workDays = config.work_days || [1, 2, 3, 4, 5]; // already in JS format
         [0, 1, 2, 3, 4, 5, 6].forEach(day => {
             gantt.setWorkTime({
                 day,
