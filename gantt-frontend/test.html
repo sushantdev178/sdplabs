@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+
+<head>
+	<meta charset="UTF-8">
+	<title>Parent moves children + auto‑extend (no errors)</title>
+	<script src="codebase/dhtmlxgantt.js"></script>
+	<link rel="stylesheet" href="codebase/dhtmlxgantt.css">
+	<style>
+		html,
+		body {
+			height: 100%;
+			margin: 0;
+			overflow: hidden;
+		}
+	</style>
+</head>
+
+<body>
+	<div id="gantt_here" style="width:100%; height:100%;"></div>
+	<script>
+		// 1. Native drag_project – moves all children when parent is dragged
+		gantt.config.drag_project = true;
+
+		// 2. Auto‑extend parent AFTER any drag/resize of a child
+		let updatingParent = false;
+		gantt.attachEvent("onAfterTaskDrag", function (id, mode) {
+			if (updatingParent) return true;
+			const task = gantt.getTask(id);
+			if (!task || task.parent === 0) return true;
+
+			const parent = gantt.getTask(task.parent);
+			if (!parent) return true;
+
+			const children = gantt.getChildren(parent.id);
+			if (children.length === 0) return true;
+
+			// Compute min start and max end among ALL children
+			let minStart = parent.start_date;
+			let maxEnd = parent.end_date;
+			for (let cid of children) {
+				const child = gantt.getTask(cid);
+				if (!child) continue;
+				if (child.start_date < minStart) minStart = child.start_date;
+				if (child.end_date > maxEnd) maxEnd = child.end_date;
+			}
+
+			// If parent needs to expand, update it
+			if (minStart.getTime() !== parent.start_date.getTime() ||
+				maxEnd.getTime() !== parent.end_date.getTime()) {
+				updatingParent = true;
+				gantt.updateTask(parent.id, { start_date: minStart, end_date: maxEnd });
+				updatingParent = false;
+			}
+			return true;
+		});
+
+		// 3. Initialize and load data
+		gantt.init("gantt_here", new Date(2023, 2, 30), new Date(2023, 3, 15));
+		gantt.parse({
+			data: [
+				{ id: 1, text: "Project #2", start_date: "01-04-2023", duration: 10, progress: 0.4, open: true },
+				{ id: 2, text: "Task #1", start_date: "02-04-2023", duration: 4, progress: 0.6, parent: 1 },
+				{ id: 3, text: "Task #2", start_date: "07-04-2023", duration: 4, progress: 0.6, parent: 1 },
+				{ id: 9, text: "Task #6", start_date: "09-04-2023", duration: 4, progress: 0.6, parent: 1 }
+			],
+			links: [
+				// No links involving the parent (id=1) – critical for avoiding errors
+				{ id: 2, source: 2, target: 3, type: "0" }
+			]
+		});
+	</script>
+</body>
+
+</html>
