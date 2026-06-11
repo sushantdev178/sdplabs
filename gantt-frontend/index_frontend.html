@@ -129,6 +129,8 @@
 
         // date_format MUST match node server gantt.config.date_format exactly
         gantt.config.date_format = "%Y-%m-%d %H:%i:%s";
+        gantt.config.utc = true;
+        // gantt.config.correct_work_time = true;
         gantt.config.duration_unit = 'day';
         gantt.config.scale_unit = "day";
         gantt.config.step = 1;
@@ -174,7 +176,7 @@
         gantt.config.lightbox.sections = [
             { name: "description", height: 38, map_to: "text", type: "textarea", focus: true },
             { name: "constraint", type: "constraint", map_to: { constraint_type: "constraint_type", constraint_date: "constraint_date" } },
-            { name: "time", type: "duration", map_to: "auto" }
+            { name: "time", type: "duration", map_to: "auto", time_format: ["%d", "%m", "%Y", "%H:%i"] }
         ];
 
         gantt.config.columns = [
@@ -223,9 +225,10 @@
             if (!str || typeof str !== 'string') return null;
             const m = str.match(/^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?)?/);
             if (!m) return null;
-            return new Date(+m[1], +m[2] - 1, +m[3], +m[4] || 0, +m[5] || 0);
+            const [, y, mo, d, h = '0', min = '0', sec = '0'] = m;
+            // Create date as UTC (no local timezone offset)
+            return new Date(Date.UTC(+y, +mo - 1, +d, +h, +min, +sec));
         }
-
         function formatDate(date) {
             if (!date || !(date instanceof Date) || isNaN(date)) return null;
             const pad = n => String(n).padStart(2, '0');
@@ -271,6 +274,7 @@
             gantt.config.auto_scheduling.strict = (gapBehavior === 'compress');
 
             gantt.config.work_time = workTime;
+            gantt.config.correct_work_time = workTime;
             gantt.config.drag_project = moveSubtasks;
             gantt.config.auto_scheduling_descendant_links = moveSubtasks;
 
@@ -325,6 +329,12 @@
 
             // Re-enable auto_scheduling AFTER parse — backend already computed correct dates on load
             gantt.config.auto_scheduling.enabled = autoSchedule;
+            if (autoSchedule) {
+                isLoading = true;
+                gantt.autoSchedule();   // then cascades links on top of already-snapped dates
+                isLoading = false;
+            }
+
             isLoading = false;
 
             // Update flags display
