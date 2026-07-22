@@ -22,11 +22,7 @@ export const errorResponse = (res, error, message = 'Internal Server Error', sta
         ...(DEBUG_MODE && {
             error: {
                 type: error?.constructor?.name || 'Error',
-                message: error?.message || 'Unknown error',
-                stack: error?.stack?.split('\n').slice(0, 5),
-                ...(error?.code && { code: error.code }),
-                ...(error?.errno && { errno: error.errno }),
-                ...(error?.sqlMessage && { sqlMessage: error.sqlMessage })
+                message: error?.message || 'Unknown error'
             }
         })
     };

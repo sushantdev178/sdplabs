@@ -1,86 +1,111 @@
 // src/controllers/ganttController.js
-import { recalculateImpact, getProjectData } from '../services/ganttEngine.js';
-import { successResponse, errorResponse, validationError } from '../utils/response.js';
-import { validateCalculateRequest, validateProjectDataRequest } from '../validators/ganttValidator.js';
 
-/**
- * Calculate impact of task date changes
- * POST /api/gantt/calculate
- */
+import {
+    validateCalculateRequest,
+    validateImpactRequest,
+    validateProjectDataRequest,
+    validateStandaloneLinkRequest
+} from '../validators/ganttValidator.js';
+import {
+    recalculateImpact,
+    calculateImpactPreview,
+    validateStandaloneLink,
+    getProjectData
+} from '../services/v1/ganttEngine.js';
+import { successResponse, errorResponse, validationError } from '../utils/response.js';
+
+// POST /api/gantt/calculate
 export const calculate = async (req, res) => {
     try {
-        const { workspace_id, project_id, task_id, start_at, due_at } = req.body;
+        const { isValid, errors } = validateCalculateRequest(req.body);
+        if (!isValid) return validationError(res, errors, 'Invalid calculation request');
 
-        // Validate request
-        const validation = validateCalculateRequest(req.body);
-        if (!validation.isValid) {
-            return validationError(res, validation.errors);
+        const { workspace_id, project_id, task_id, start_at, due_at, operation, link_id } = req.body;
+        const result = await recalculateImpact({
+            workspace_id,
+            project_id,
+            task_id,
+            start_at,
+            due_at,
+            operation: operation || null,
+            link_id
+        });
+
+        if (!result.success) {
+            return validationError(res, [result.error], 'Scheduling blocked !');
         }
 
-        // Prepare task updates if provided
-        const taskUpdates = task_id && start_at ? {
-            start_at,
-            due_at: due_at || start_at
-        } : null;
-
-        // Calculate impact
-        const result = await recalculateImpact({
-            workspace_id: parseInt(workspace_id),
-            project_id: project_id ? parseInt(project_id) : null,
-            task_id: task_id ? parseInt(task_id) : null,
-            taskUpdates
-        });
-
-        // Return in format matching frontend expectations
-        return res.status(200).json({
-            success: true,
-            message: result.message || "Impact recalculation complete",
-            data: result.data
-        });
-    } catch (error) {
-        console.error('Calculate endpoint error:', error);
-        return res.status(500).json({
-            success: false,
-            message: `Calculation failed: ${error.message}`,
-            error: {
-                type: error.constructor.name,
-                message: error.message
-            }
-        });
+        return successResponse(res, result.data, result.message);
+    } catch (err) {
+        return errorResponse(res, err, 'Failed to calculate gantt schedule');
     }
 };
 
-/**
- * Get project data for frontend
- * GET /api/gantt/project-data
- */
-export const getProject = async (req, res) => {
+// POST /api/gantt/calculate-impact
+export const calculateImpact = async (req, res) => {
     try {
-        const { workspace_id, project_id } = req.query;
+        const { isValid, errors } = validateImpactRequest(req.body);
+        if (!isValid) return validationError(res, errors, 'Invalid impact calculation request');
 
-        // Validate request
-        const validation = validateProjectDataRequest(req.query);
-        if (!validation.isValid) {
-            return validationError(res, validation.errors);
+        const { workspace_id, project_id, task_id, start_at, due_at, operation, link_id, link } = req.body;
+
+        const result = await calculateImpactPreview({
+            workspace_id,
+            project_id,
+            task_id,
+            start_at,
+            due_at,
+            operation: operation || null,
+            link_id: link_id || null, // pass it down
+            link: link || null        // pass it down       
+        });
+
+        if (!result.success) {
+            return validationError(res, [result.error], 'Scheduling blocked !');
         }
 
-        // Get project data
-        const data = await getProjectData({
-            workspace_id: parseInt(workspace_id),
-            project_id: parseInt(project_id)
-        });
+        return successResponse(res, result.data, 'Impact calculation complete');
+    } catch (err) {
+        return errorResponse(res, err, 'Failed to calculate gantt impact');
+    }
+};
 
-        // Return the data directly (frontend expects this format)
-        return res.status(200).json(data);
-    } catch (error) {
-        console.error('Get project endpoint error:', error);
-        return res.status(500).json({
-            success: false,
-            message: `Failed to get project data: ${error.message}`,
-            error: {
-                type: error.constructor.name,
-                message: error.message
-            }
-        });
+// POST /api/gantt/validate
+export const validateLink = async (req, res) => {
+    try {
+        const { isValid, errors } = validateStandaloneLinkRequest(req.body);
+        if (!isValid) return validationError(res, errors, 'Invalid validation request');
+
+        const { workspace_id, project_id, type, link } = req.body;
+
+        const result = await validateStandaloneLink({ workspace_id, project_id, type, link });
+
+        if (!result.success) {
+            return successResponse(res, {
+                valid: false,
+                reason: result.reason,
+                detail: result.detail || null
+            }, 'Link validation failed');
+        }
+
+        return successResponse(res, { valid: true }, 'Link is valid');
+    } catch (err) {
+        return errorResponse(res, err, 'Failed to validate link');
+    }
+};
+
+// GET /api/gantt/project-data
+export const getProject = async (req, res) => {
+    try {
+        const { isValid, errors } = validateProjectDataRequest(req.query);
+        if (!isValid) return validationError(res, errors, 'Invalid project data request');
+
+        const { workspace_id, project_id } = req.query;
+
+        const data = await getProjectData({ workspace_id, project_id });
+
+        return successResponse(res, data, 'Project data loaded successfully');
+    } catch (err) {
+        return errorResponse(res, err, 'Failed to fetch project data');
     }
 };

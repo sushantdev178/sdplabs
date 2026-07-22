@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<head>
+	<meta http-equiv="Content-type" content="text/html; charset=utf-8">
+	<title>Localization</title>
+	<script src="../../codebase/dhtmlxgantt.js?v=10.0.0"></script>
+	<link rel="stylesheet" href="../../codebase/dhtmlxgantt.css?v=10.0.0">
+	<link rel="stylesheet" href="../common/controls_styles.css?v=10.0.0">
+
+	<script src="../common/testdata.js?v=10.0.0"></script>
+	<style>
+		html, body {
+			height: 100%;
+			padding: 0px;
+			margin: 0px;
+			overflow: hidden;
+		}
+		#gantt_here {
+			width: 100%;
+			height: 800px;
+			height: calc(100vh - 52px);
+		}
+
+	</style>
+</head>
+
+<body>
+<div class="gantt_control">
+	<label>Current locale:</label>
+	<select class="locale_changer" onchange="changeLocale(this.value)">
+		<option class="locale_" value="">Choose locale</option>
+		<option class="locale_af" value="af">Afrikaans</option>
+		<option class="locale_sq" value="sq">Albanian</option>
+		<option class="locale_ar" value="ar">Arabic</option>
+		<option class="locale_be" value="be">Belarusian</option>
+		<option class="locale_bs" value="bs">Bosnian</option>
+		<option class="locale_bg" value="bg">Bulgarian</option>
+		<option class="locale_ca" value="ca">Catalan</option>
+		<option class="locale_cn" value="cn">Chinese (Simplified)</option>
+		<option class="locale_zh_hk" value="zh_hk">Chinese (Hong Kong)</option>
+		<option class="locale_zh_tw" value="zh_tw">Chinese (Taiwan)</option>
+		<option class="locale_hr" value="hr">Croatian</option>
+		<option class="locale_cs" value="cs">Czech</option>
+		<option class="locale_da" value="da">Danish</option>
+		<option class="locale_nl" value="nl">Dutch</option>
+		<option class="locale_nl_be" value="nl_be">Dutch (Belgium)</option>
+		<option class="locale_" value="">English</option>
+		<option class="locale_et" value="et">Estonian</option>
+		<option class="locale_fi" value="fi">Finnish</option>
+		<option class="locale_fr" value="fr" selected>French (France)</option>
+		<option class="locale_fr_ca" value="fr_ca">French (Canada)</option>
+		<option class="locale_de" value="de">German (Germany)</option>
+		<option class="locale_de_at" value="de_at">German (Austria)</option>
+		<option class="locale_el" value="el">Greek</option>
+		<option class="locale_he" value="he">Hebrew</option>
+		<option class="locale_hu" value="hu">Hungarian</option>
+		<option class="locale_id" value="id">Indonesian</option>
+		<option class="locale_ga" value="ga">Irish</option>
+		<option class="locale_it" value="it">Italian</option>
+		<option class="locale_jp" value="jp">Japanese</option>
+		<option class="locale_kr" value="kr">Korean</option>
+		<option class="locale_lv" value="lv">Latvian</option>
+		<option class="locale_lt" value="lt">Lithuanian</option>
+		<option class="locale_mk" value="mk">Macedonian</option>
+		<option class="locale_ms" value="ms">Malay</option>
+		<option class="locale_nb" value="nb">Norwegian (Bokmål)</option>
+		<option class="locale_no" value="no">Norwegian (Nynorsk)</option>
+		<option class="locale_fa" value="fa">Persian</option>
+		<option class="locale_pl" value="pl">Polish</option>
+		<option class="locale_pt" value="pt">Portuguese (Portugal)</option>
+		<option class="locale_pt_br" value="pt_br">Portuguese (Brazil)</option>
+		<option class="locale_ro" value="ro">Romanian</option>
+		<option class="locale_ru" value="ru">Russian</option>
+		<option class="locale_sk" value="sk">Slovak</option>
+		<option class="locale_si" value="si">Slovenian</option>
+		<option class="locale_es" value="es">Spanish (Spain)</option>
+		<option class="locale_es_mx" value="es_mx">Spanish (Mexico)</option>
+		<option class="locale_sv" value="sv">Swedish</option>
+		<option class="locale_th" value="th">Thai</option>
+		<option class="locale_tr" value="tr">Turkish</option>
+		<option class="locale_ua" value="ua">Ukrainian</option>
+		<option class="locale_vi" value="vi">Vietnamese</option>
+	</select>
+</div>
+<div id="gantt_here"></div>
+<script>
+	function changeLocale(lang) {
+			gantt.i18n.setLocale(lang);
+			gantt.render();
+	}
+
+	changeLocale("fr")
+	gantt.init("gantt_here");
+	gantt.parse(demo_tasks);
+
+</script>
+</body>

@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html>
+<head>
+	<meta http-equiv="Content-type" content="text/html; charset=utf-8">
+	<title>Zoom To Fit</title>
+	<script src="../../codebase/dhtmlxgantt.js?v=10.0.0"></script>
+	<script src="../common/testdata.js?v=10.0.0"></script>
+	<link rel="stylesheet" href="../../codebase/dhtmlxgantt.css?v=10.0.0">
+	<link rel="stylesheet" href="../common/controls_styles.css?v=10.0.0">
+
+	<style>
+		html, body {
+			height: 100%;
+			padding: 0px;
+			margin: 0px;
+		}
+	</style>
+</head>
+<body>
+<div class="gantt_control">
+	<button class='zoom_fit' onclick="gantt.ext.zoom.zoomToFit()">Zoom to Fit</button>
+	<button class='zoom_reset' onclick="gantt.ext.zoom.resetZoom()">Reset</button>
+	<input type=button value="Zoom In" onclick="gantt.ext.zoom.zoomIn();">
+	<input type=button value="Zoom Out" onclick="gantt.ext.zoom.zoomOut();">
+</div>
+<div id="gantt_here" style='width:100%; height:calc(100vh - 52px); position: relative;'></div>
+<script>
+
+	// Zoom-to-Fit is built into the zoom extension - the buttons above call the ready-made
+	// gantt.ext.zoom.zoomToFit() / resetZoom() methods directly, no custom code is needed.
+	// zoomToFit() is idempotent: clicking it repeatedly keeps the same fitted scale, and
+	// resetZoom() restores the scale that was active before the first zoomToFit() call.
+
+	var zoomConfig = {
+		levels: [
+			// hours
+			{
+				name:"hour",
+				scale_height: 27,
+				scales:[
+					{unit:"day", step: 1, format:"%d %M"},
+					{unit:"hour", step: 1, format:"%H:%i"},
+				]
+			},
+			// days
+			{
+				name:"day",
+				scale_height: 27,
+				scales:[
+					{unit: "day", step: 1, format: "%d %M"}
+				]
+			},
+			// weeks
+			{
+				name:"week",
+				scale_height: 50,
+				scales:[
+					{unit: "week", step: 1, format: function (date) {
+						var dateToStr = gantt.date.date_to_str("%d %M");
+						var endDate = gantt.date.add(date, 7 - date.getDay(), "day");
+						var weekNum = gantt.date.date_to_str("%W")(date);
+						return "#" + weekNum + ", " + dateToStr(date) + " - " + dateToStr(endDate);
+					}},
+					{unit: "day", step: 1, format: "%j %D"}
+				]
+			},
+			// months
+			{
+				name:"month",
+				scale_height: 50,
+				scales:[
+					{unit: "month", step: 1, format: "%F, %Y"},
+					{unit: "week", step: 1, format: function (date) {
+						var dateToStr = gantt.date.date_to_str("%d %M");
+						var endDate = gantt.date.add(date, 7 - date.getDay(), "day");
+						return dateToStr(date) + " - " + dateToStr(endDate);
+					}}
+				]
+			},
+			// quarters
+			{
+				name:"quarter",
+				scale_height: 50,
+				scales:[
+					{
+						unit: "quarter", step: 3, format: function (date) {
+							var dateToStr = gantt.date.date_to_str("%M %y");
+							var endDate = gantt.date.add(date, 2 - date.getMonth() % 3, "month");
+							return dateToStr(date) + " - " + dateToStr(endDate);
+						}
+					},
+					{unit: "month", step: 1, format: "%M"},
+				]
+			},
+			// years
+			{
+				name:"year",
+				scale_height: 50,
+				scales:[
+					{unit: "year", step: 5, format: function (date) {
+						var dateToStr = gantt.date.date_to_str("%Y");
+						var endDate = gantt.date.add(gantt.date.add(date, 5, "year"), -1, "day");
+						return dateToStr(date) + " - " + dateToStr(endDate);
+					}}
+				]
+			},
+			// decades
+			{
+				name:"decade",
+				scale_height: 50,
+				scales:[
+					{unit: "year", step: 100, format: function (date) {
+						var dateToStr = gantt.date.date_to_str("%Y");
+						var endDate = gantt.date.add(gantt.date.add(date, 100, "year"), -1, "day");
+						return dateToStr(date) + " - " + dateToStr(endDate);
+					}},
+					{unit: "year", step: 10, format: function (date) {
+						var dateToStr = gantt.date.date_to_str("%Y");
+						var endDate = gantt.date.add(gantt.date.add(date, 10, "year"), -1, "day");
+						return dateToStr(date) + " - " + dateToStr(endDate);
+					}},
+				]
+			},
+		],
+		element: function(){
+			return gantt.$root.querySelector(".gantt_task");
+		}
+
+		// Optional: redefine the zoom-to-fit behaviour for custom setups.
+		// "fit.levels" lets you use a dedicated set of scales just for fitting,
+		// and "fit.handler" fully overrides which level is chosen:
+		//
+		// fit: {
+		// 	scope: "all",            // "all" (default) fits every loaded task, "visible" fits expanded rows
+		// 	levels: [ /* custom scales, defaults to the interactive levels above */ ],
+		// 	handler: function(context){
+		// 		// context: { range, viewportWidth, levels, padding, defaultLevel }
+		// 		return context.defaultLevel; // return a level name/index, or false to abort
+		// 	}
+		// }
+	};
+
+	gantt.config.fit_tasks = true;
+
+
+	gantt.ext.zoom.init(zoomConfig);
+
+	gantt.ext.zoom.setLevel("day");
+
+	gantt.message({text: "Scale the Gantt chart to make the whole project fit the screen", expire: -1});
+	gantt.init("gantt_here");
+	gantt.parse(demo_tasks);
+
+
+
+
+</script>
+</body>

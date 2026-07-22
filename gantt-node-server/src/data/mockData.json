@@ -1,0 +1,61 @@
+{
+    "workspaces": [
+        {
+            "id": 9999,
+            "weekend": [
+                2,
+                5
+            ]
+        }
+    ],
+    "off_days": [],
+    "projects": [
+        {
+            "id": 8888,
+            "workspace_id": 9999,
+            "name": "DURATION SHIFT WEEKEND REPLICATION TEST",
+            "start_date": "2026-06-01",
+            "due_date": "2026-06-30",
+            "auto_schedule_tasks": true,
+            "auto_schedule_tasks_gap": "keep",
+            "move_subtasks_with_parent": true,
+            "restrict_tasks_to_working_days": true
+        }
+    ],
+    "tasks": [
+        {
+            "id": 101,
+            "name": "TASK A",
+            "start_at": "2026-06-23 00:00:00",
+            "due_at": "2026-06-25 00:00:00",
+            "parent_id": null,
+            "constraint_type": "asap",
+            "constraint_date": null,
+            "workspace_id": 9999,
+            "project_id": 8888
+        },
+        {
+            "id": 102,
+            "name": "TASK A.1",
+            "start_at": "2026-06-17 00:00:00",
+            "due_at": "2026-06-18 00:00:00",
+            "parent_id": 101,
+            "constraint_type": "asap",
+            "constraint_date": null,
+            "workspace_id": 9999,
+            "project_id": 8888
+        },
+        {
+            "id": 103,
+            "name": "TASK A.1.1",
+            "start_at": "2026-06-19 00:00:00",
+            "due_at": "2026-06-21 00:00:00",
+            "parent_id": 102,
+            "constraint_type": "asap",
+            "constraint_date": null,
+            "workspace_id": 9999,
+            "project_id": 8888
+        }
+    ],
+    "task_links": []
+}

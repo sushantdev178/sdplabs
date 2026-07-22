@@ -5,17 +5,19 @@
   "main": "src/index.js",
   "type": "module",
   "scripts": {
-    "start": "node src/index.js",
-    "dev": "nodemon src/index.js"
+    "dev": "cross-env TZ=UTC nodemon src/index.js",
+    "start": "cross-env TZ=UTC node src/index.js"
   },
   "dependencies": {
-    "@dhx/gantt-node": "file:local-packages/gantt_9.1.1_node_evaluation",
+    "@dhx/gantt-node": "file:local-packages/gantt_10_node_evaluation",
     "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "mysql2": "^3.22.2",
     "uuid": "^14.0.0"
   },
   "devDependencies": {
+    "cross-env": "^10.1.0",
     "nodemon": "^3.1.14"
   }
 }

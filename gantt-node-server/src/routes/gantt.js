@@ -1,13 +1,23 @@
 // src/routes/gantt.js
-import { Router } from 'express';
-import { calculate, getProject } from '../controllers/ganttController.js';
+import express from 'express';
+import {
+    calculate,
+    calculateImpact,
+    validateLink,
+    getProject
+} from '../controllers/ganttController.js';
 
-const router = Router();
+const router = express.Router();
 
-// POST /api/gantt/calculate - Calculate impact of task date changes
-router.post('/calculate', calculate);
+// Full calculation for saving to database
+router.post('/v1/calculate', calculate);
+// Preview calculation (max 10 tasks) for UI warnings
+router.post('/v1/calculate-impact', calculateImpact);
 
-// GET /api/gantt/project-data - Get project data for frontend
+// Standalone validation (circular/hierarchy checks)
+router.post('/validate', validateLink);
+
+// Data fetching for the frontend GUI
 router.get('/project-data', getProject);
 
 export default router;

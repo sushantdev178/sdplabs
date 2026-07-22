@@ -1,180 +1,77 @@
 // src/utils/dateHelper.js
+//
+// ─────────────────────────────────────────────────────────────
+// DATE HELPERS — shared by dhtmlxScheduler.js and ganttEngine.js
+// ─────────────────────────────────────────────────────────────
+// All DB datetime columns are "YYYY-MM-DD HH:mm:ss" strings (or Date
+// objects depending on mysql2 config — both are handled below).
+// DHTMLX works with JS Date objects internally, parsed/serialized in
+// LOCAL time. We parse strings → Date using LOCAL constructors and
+// format Date → strings using LOCAL getters, so with TZ=UTC the
+// round-trip through DHTMLX is lossless.
+//
+// TIMEZONE RULE:
+// Node process MUST run with TZ=UTC (set in package.json scripts:
+//   "dev": "TZ=UTC nodemon src/index.js", "start": "TZ=UTC node src/index.js")
+// ph_tasks.start_at / due_at are stored in UTC. TZ=UTC makes Node local
+// time = UTC = DB time → no offset corruption when DHTMLX parses dates
+// using its internal LOCAL-time logic.
+// ─────────────────────────────────────────────────────────────
 
-// DB weekend column uses: 1=Sun, 2=Mon, 3=Tue, 4=Wed, 5=Thu, 6=Fri, 7=Sat
-// JS/Gantt uses:           0=Sun, 1=Mon, 2=Tue, 3=Wed, 4=Thu, 5=Fri, 6=Sat
-// weekend:[1,7] (Sun+Sat off) → work_days:[1,2,3,4,5] (Mon-Fri) in JS format
-const API_TO_JS = { 1: 0, 2: 1, 3: 2, 4: 3, 5: 4, 6: 5, 7: 6 };
+const pad = n => String(n).padStart(2, '0');
 
-/**
- * Convert MySQL datetime string to a JavaScript Date object (local time).
- * This mimics frontend's parseDate() exactly.
- * Input:  "2026-05-01 11:55:35" or "2026-05-01"
- * Output: Date object (local)
- */
-export const toDateObject = (str) => {
-    if (!str) return null;
-    if (str instanceof Date) return str;
-    const m = String(str).match(/^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?)?/);
+// Any DB value (string "YYYY-MM-DD[ HH:mm:ss]", or Date object) → JS Date (local)
+export const toDate = (val) => {
+    if (!val) return null;
+    if (val instanceof Date) return val;
+    const m = String(val).match(/^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?)?/);
     if (!m) return null;
     const [, y, mo, d, h = '0', min = '0', sec = '0'] = m;
-    // Month is 0-indexed in JS Date constructor
-    return new Date(+y, +mo - 1, +d, +h, +min, +sec);
+    return new Date(+y, +mo - 1, +d, +h, +min, +sec); // LOCAL — matches DHTMLX internal parsing
 };
 
-/**
- * Convert MySQL date to DHTMLX Gantt string format.
- * MUST match gantt.config.date_format = "%Y-%m-%d %H:%i:%s" exactly.
- * Input:  "2025-05-04 10:30:00" or Date object
- * Output: "2025-05-04 10:30:00"
- */
-export const toGanttDate = (str) => {
-    if (!str) return null;
-    // If it's already a Date, format it
-    if (str instanceof Date) {
-        if (isNaN(str.getTime())) return null;
-        const pad = n => String(n).padStart(2, '0');
-        return `${str.getFullYear()}-${pad(str.getMonth() + 1)}-${pad(str.getDate())} ${pad(str.getHours())}:${pad(str.getMinutes())}:00`;
-    }
-    const m = String(str).match(/^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?)?/);
-    if (!m) return null;
-    const [, y, mo, d, h = '00', min = '00', sec = '00'] = m;
-    return `${y}-${mo}-${d} ${h}:${min}:${sec}`;
-};
-
-/**
- * Convert DHTMLX Gantt format back to MySQL date string.
- * Input:  "2025-05-04 10:30:00" or Date object
- * Output: "2025-05-04 10:30:00"
- */
-export const toMysqlDate = (ganttStr) => {
-    if (!ganttStr) return null;
-    if (ganttStr instanceof Date) {
-        if (isNaN(ganttStr.getTime())) return null;
-        const pad = n => String(n).padStart(2, '0');
-        return `${ganttStr.getFullYear()}-${pad(ganttStr.getMonth() + 1)}-${pad(ganttStr.getDate())} ${pad(ganttStr.getHours())}:${pad(ganttStr.getMinutes())}:00`;
-    }
-    const m = String(ganttStr).match(/^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})(?::(\d{2}))?/);
-    if (!m) return null;
-    const [, y, mo, d, h, min, sec = '00'] = m;
-    return `${y}-${mo}-${d} ${h}:${min}:${sec}`;
-};
-
-/**
- * Convert DHTMLX date to comparable format for sorting (minute precision).
- * Input:  "2025-05-04 10:30:00"
- * Output: "2025-05-04 10:30"
- */
-export const toComparable = (ganttDate) => {
-    if (!ganttDate) return null;
-    return ganttDate.slice(0, 16);
-};
-
-/**
- * Convert DHTMLX date string to JavaScript Date object.
- * Input:  "2025-05-04 10:30:00"
- * Output: Date object
- */
-export const ganttToJsDate = (ganttDate) => {
-    if (!ganttDate) return null;
-    const m = ganttDate.match(/^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})/);
-    if (!m) return null;
-    const [, y, mo, d, h, min] = m;
-    return new Date(+y, +mo - 1, +d, +h, +min);
-};
-
-/**
- * Convert JavaScript Date to DHTMLX Gantt format string.
- * Input:  Date object
- * Output: "2025-05-04 10:30:00"
- */
-export const jsDateToGantt = (date) => {
+// JS Date → MySQL datetime string (local getters)
+export const toMysql = (date) => {
     if (!date) return null;
-    const pad = n => String(n).padStart(2, '0');
+    if (!(date instanceof Date) || isNaN(date.getTime())) return null;
     return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:00`;
 };
 
-/**
- * Parse workspace weekend setting to working days array in JS/Gantt format.
- * Input:  {"weekend": [1, 7]}  — DB format: 1=Sun, 7=Sat
- * Output: [1, 2, 3, 4, 5]     — JS format: Mon-Fri (0=Sun,1=Mon,...,6=Sat)
- */
-export const parseWorkDays = (weekendJson) => {
-    const ALL_DAYS = [0, 1, 2, 3, 4, 5, 6];
+// Any value (Date object or string) → MySQL datetime string
+export const anyToMysql = (val) => {
+    if (!val) return null;
+    if (val instanceof Date) return toMysql(val);
+    const m = String(val).match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/);
+    if (!m) return null;
+    const [, y, mo, d, h, min] = m;
+    return `${y}-${mo}-${d} ${h}:${min}:00`;
+};
+
+// DB DATE column (date-only) → "YYYY-MM-DD" string, handles Date objects too
+export const toDateOnly = (val) => {
+    if (!val) return null;
+    if (val instanceof Date) return `${val.getFullYear()}-${pad(val.getMonth() + 1)}-${pad(val.getDate())}`;
+    return String(val).slice(0, 10);
+};
+
+// Minute-precision string for comparison (ignores seconds)
+export const toMin = (s) => s ? String(s).slice(0, 16) : null;
+
+// ─────────────────────────────────────────────────────────────
+// WEEKEND / WORK-DAY CONVERSION
+// DB weekend format: 1=Sun, 2=Mon … 7=Sat  →  JS day format: 0=Sun … 6=Sat
+// ─────────────────────────────────────────────────────────────
+
+export const DB_TO_JS_DAY = { 1: 0, 2: 1, 3: 2, 4: 3, 5: 4, 6: 5, 7: 6 };
+
+// ph_workspaces.weekend may come back as a JSON string, a plain array [1,7],
+// or wrapped as { weekend: [1,7] } — handle all three shapes.
+export const parseWeekendArray = (weekendJson) => {
     let parsed = weekendJson;
-    if (typeof weekendJson === 'string') {
-        try {
-            parsed = JSON.parse(weekendJson);
-        } catch {
-            return [1, 2, 3, 4, 5];
-        }
+    if (typeof parsed === 'string') {
+        try { parsed = JSON.parse(parsed); } catch { return [1, 7]; }
     }
-    const offDays = (parsed?.weekend ?? [])
-        .map(d => API_TO_JS[d])
-        .filter(d => d !== undefined);
-    return ALL_DAYS.filter(d => !offDays.includes(d));
-};
-
-/**
- * Snap date to nearest working day
- */
-export const snapToWorkingDay = (ganttDate, direction, workDays, holidays) => {
-    if (!ganttDate) return ganttDate;
-    const d = ganttToJsDate(ganttDate);
-    if (!d) return ganttDate;
-    const holidaySet = new Set((holidays || []).map(h => String(h).slice(0, 10)));
-    const isWorking = (date) => {
-        const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
-        return workDays.includes(date.getDay()) && !holidaySet.has(key);
-    };
-    if (isWorking(d)) return ganttDate;
-    const delta = direction === 'forward' ? 1 : -1;
-    const candidate = new Date(d);
-    for (let i = 0; i < 30; i++) {
-        candidate.setDate(candidate.getDate() + delta);
-        if (isWorking(candidate)) return jsDateToGantt(candidate);
-    }
-    return ganttDate;
-};
-
-/**
- * Check if a date is a working day
- */
-export const isWorkingDay = (date, workDays, holidays) => {
-    if (!date) return false;
-    const holidaySet = new Set((holidays || []).map(h => String(h).slice(0, 10)));
-    const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
-    return workDays.includes(date.getDay()) && !holidaySet.has(key);
-};
-
-/**
- * Format date for display
- */
-export const formatDisplayDate = (mysqlDate) => {
-    if (!mysqlDate) return '';
-    const d = new Date(mysqlDate);
-    if (isNaN(d.getTime())) return mysqlDate;
-    return d.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
-};
-
-/**
- * Add days to a MySQL date
- */
-export const addDays = (mysqlDate, days) => {
-    if (!mysqlDate) return null;
-    const d = new Date(mysqlDate);
-    if (isNaN(d.getTime())) return mysqlDate;
-    d.setDate(d.getDate() + days);
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:00`;
-};
-
-/**
- * Calculate duration between two MySQL dates in days
- */
-export const calculateDuration = (startDate, endDate) => {
-    if (!startDate || !endDate) return 0;
-    const start = new Date(startDate);
-    const end = new Date(endDate);
-    if (isNaN(start.getTime()) || isNaN(end.getTime())) return 0;
-    const diffTime = Math.abs(end - start);
-    return Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
+    if (Array.isArray(parsed)) return parsed;
+    if (parsed?.weekend && Array.isArray(parsed.weekend)) return parsed.weekend;
+    return [1, 7]; // default Sun+Sat off
 };
