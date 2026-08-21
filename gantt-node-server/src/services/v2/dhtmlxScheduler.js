@@ -14,6 +14,35 @@ const LINK_TYPE_MAP = {
     'start_to_finish': '3'
 };
 
+// ── Inclusive/Exclusive end-date boundary conversion ──
+// Our business rule: "10th to 12th" = 3 full inclusive days.
+// DHTMLX's native rule: end_date is exclusive (midnight AFTER the last
+// working day) — the same range is 2 days internally.
+// Rather than injecting any time-of-day (e.g. 23:59:59) to bridge this —
+// which reintroduces fractional-day remainders and triggers Gantt's
+// day-unit rounding — we convert with pure whole-day arithmetic, always
+// on exact midnight boundaries. This guarantees calculateDuration() only
+// ever sees integer day spans, so there is nothing for it to round.
+//
+// IMPORTANT: this conversion applies ONLY when time_used === false
+// (whole-day tasks). For time_used === true (hour-precision tasks), the
+// due date is expected to carry a real time-of-day and is NOT a whole-day
+// block — there is no inclusive/exclusive ambiguity to correct, and
+// shifting it by a day would silently corrupt an hour-precision deadline.
+const addOneDay = (date) => {
+    const d = new Date(date.getTime());
+    d.setDate(d.getDate() + 1);
+    return d;
+};
+const subOneDay = (date) => {
+    const d = new Date(date.getTime());
+    d.setDate(d.getDate() - 1);
+    return d;
+};
+// Gated wrappers — use these everywhere instead of the raw helpers above.
+const toGanttEnd = (date, timeUsed) => (timeUsed ? date : addOneDay(date));
+const fromGanttEnd = (date, timeUsed) => (timeUsed ? date : subOneDay(date));
+
 // NOTE: No module-level gantt instance here — removed rogue instance that was
 // created at module load time and potentially corrupting shared internal state.
 
@@ -51,7 +80,7 @@ const createGanttInstance = ({ workDays, holidays, project }) => {
     return gantt;
 };
 
-export const runScheduling = ({ context, task_id, triggeredDates, operation, link_id, link, new_type }) => { // <-- Add 'link' here
+export const runScheduling = ({ context, task_id, triggeredDates, operation, link_id, link, new_type }) => {
     const { project, workDays, holidays, allTasks, allLinks } = context;
 
     const linksForValidation = (operation === 'add_link' && link)
@@ -71,8 +100,7 @@ export const runScheduling = ({ context, task_id, triggeredDates, operation, lin
             message: 'Auto-scheduling is disabled for this project',
             data: {
                 triggeredTask: null,
-                linkAdjustments: [],
-                constraintUpdates: [],
+                tasks: [],
                 impactedTaskIds: [],
                 project: null
             }
@@ -85,22 +113,27 @@ export const runScheduling = ({ context, task_id, triggeredDates, operation, lin
         start_at: anyToMysql(t.start_at) ?? t.start_at,
         due_at: anyToMysql(t.due_at) ?? t.due_at,
         constraint_type: t.constraint_type || 'asap',
-        constraint_date: t.constraint_date ? (anyToMysql(t.constraint_date) ?? (toDateOnly(t.constraint_date) + ' 00:00:00')) : null
+        constraint_date: t.constraint_date ? (anyToMysql(t.constraint_date) ?? (toDateOnly(t.constraint_date) + ' 00:00:00')) : null,
+        time_used: !!t.time_used
     }]));
 
     const gantt = createGanttInstance({ workDays, holidays, project });
 
     // ── 2. Format Tasks and Links ──
-    const normTasks = allTasks.map(t => ({
-        id: t.id,
-        text: t.name || `Task ${t.id}`,
-        parent: t.parent_id ?? 0,
-        start_date: toDate(t.start_at),
-        end_date: toDate(t.due_at),
-        progress: t.progress || 0,
-        constraint_type: t.constraint_type || 'asap',
-        constraint_date: t.constraint_date ? toDate(t.constraint_date) : null
-    }));
+    const normTasks = allTasks.map(t => {
+        const timeUsed = !!t.time_used;
+        return {
+            id: t.id,
+            text: t.name || `Task ${t.id}`,
+            parent: t.parent_id ?? 0,
+            start_date: toDate(t.start_at),
+            end_date: toGanttEnd(toDate(t.due_at), timeUsed), // inclusive DB date -> exclusive Gantt date, only for whole-day tasks
+            progress: t.progress || 0,
+            constraint_type: t.constraint_type || 'asap',
+            constraint_date: t.constraint_date ? toDate(t.constraint_date) : null,
+            time_used: timeUsed // custom prop — round-trips through Gantt, read back at every later call site
+        };
+    });
 
     // If delete_link: remove all incoming links to successor before parse
     // so DHTMLX never sees the deleted link at all
@@ -125,42 +158,14 @@ export const runScheduling = ({ context, task_id, triggeredDates, operation, lin
 
     gantt.parse({ data: normTasks, links: normLinks });
 
-
+    // Re-apply after parse — gantt.parse() resets the auto_scheduling config
+    // object internally, so these must be set again before autoSchedule runs.
     gantt.config.auto_scheduling.gap_behavior = project.auto_schedule_tasks_gap === 'compress' ? 'compress' : 'preserve';
     gantt.config.auto_scheduling.apply_constraints = true;
 
-
-    // ── 2b. Snap constraint dates to correct working day per constraint type ──
-    // DHTMLX Node package does not consistently snap constraint dates that fall
-    // on non-working days. This pass corrects them before autoSchedule runs.
-    // DB stores user's original intent — engine works with calendar-corrected values.
-    // This also handles calendar changes (holidays added/changed after constraint was set).
-
-    if (project.restrict_tasks_to_working_days) {
-        gantt.eachTask(t => {
-            if (!t.constraint_date) return;
-            const type = (t.constraint_type || 'asap').toLowerCase();
-            if (type === 'asap') return;
-            if (gantt.isWorkTime(t.constraint_date)) return;
-
-            // Always snap to next future working day
-            // For FNLT/SNLT this makes constraint slightly looser
-            // but is the only reliable direction given getClosestWorkTime 'past' bug
-            t.constraint_date = gantt.getClosestWorkTime({
-                date: t.constraint_date,
-                dir: 'future'
-            });
-        });
-    }
-
-    // ── 2c. Update snapshot to reflect snapped constraint dates as new baseline ──
-    // Without this, every snapped task appears in constraintUpdates even if
-    // autoSchedule() never visited it — causing false updates to unrelated tasks.
-    gantt.eachTask(t => {
-        const snap = snapshot.get(t.id);
-        if (!snap) return;
-        snap.constraint_date = t.constraint_date ? anyToMysql(t.constraint_date) : null;
-    });
+    // ── NOTE: Constraint-date snap-pass logic REMOVED ──
+    // Testing native DHTMLX behavior when a constraint_date falls on a
+    // non-working day, with no manual correction applied.
 
     // ── 3. Apply Triggered Task Update (drag / resize) ──
     if (task_id && triggeredDates) {
@@ -168,7 +173,7 @@ export const runScheduling = ({ context, task_id, triggeredDates, operation, lin
         if (task) {
             const oldStart = task.start_date.getTime();
             let newStart = toDate(triggeredDates.start_at);
-            let newEnd = toDate(triggeredDates.due_at);
+            let newEnd = toGanttEnd(toDate(triggeredDates.due_at), task.time_used); // inclusive input -> exclusive for Gantt math, only for whole-day tasks
 
             if (project.restrict_tasks_to_working_days) {
                 const duration = Math.max(1, gantt.calculateDuration({ start_date: newStart, end_date: newEnd, task }));
@@ -199,12 +204,6 @@ export const runScheduling = ({ context, task_id, triggeredDates, operation, lin
     }
 
     // ── Step 3c — update_link: change an existing link's type ──
-    // Links are already loaded via normLinks/gantt.parse() with their CURRENT
-    // (old) type from DB at this point. This block updates the link's type
-    // in the live gantt instance to the NEW type, clears any stale SNET on
-    // the affected task (old constraint context may not apply under new type),
-    // and determines cascade direction — reversed for STF since its dependency
-    // direction is opposite of FTS/SST/FTF.
     if (operation === 'update_link' && link_id && new_type) {
         if (!gantt.isLinkExists(link_id)) {
             return { success: false, error: 'Link to update not found' };
@@ -231,7 +230,6 @@ export const runScheduling = ({ context, task_id, triggeredDates, operation, lin
         derivedTaskId = cascadeFrom;
     }
 
-
     if (operation === 'add_link' && link) {
         const sourceId = Number(link.source);
         const targetId = Number(link.target);
@@ -256,19 +254,21 @@ export const runScheduling = ({ context, task_id, triggeredDates, operation, lin
     if (derivedTaskId) {
         if (gantt.isTaskExists(derivedTaskId)) {
             gantt.autoSchedule(derivedTaskId);
-            const t = gantt.getTask(derivedTaskId);
-            // console.log(`Auto-scheduled run for task ${derivedTaskId}: new start=${t.start_date}, new end=${t.end_date}`);
         } else {
             throw new Error(`Scheduling blocked: Task ${derivedTaskId} does not exist in Project ${project.id}`);
         }
     } else {
         gantt.autoSchedule();
-        console.log(`Auto-scheduled run for entire project`);
     }
 
     // ── 5. Build Diff ──
-    const linkAdjustments = [];
-    const constraintUpdates = [];
+    // Single unified list: every task whose dates OR constraint changed
+    // (relative to its pre-scheduling snapshot) is reported once, with
+    // its full current state. No more separate linkAdjustments /
+    // constraintUpdates buckets — a task that had both a date shift and
+    // a constraint change previously would've shown up in two places;
+    // now it's one entry with both new values already reflected.
+    const tasks = [];
     let triggeredFinal = null;
 
     let projectStartMin = null;
@@ -276,14 +276,16 @@ export const runScheduling = ({ context, task_id, triggeredDates, operation, lin
 
     gantt.eachTask(t => {
 
+        const inclusiveEnd = fromGanttEnd(t.end_date, t.time_used); // exclusive Gantt date -> inclusive DB date, only for whole-day tasks
+
         if (!projectStartMin || t.start_date < projectStartMin) projectStartMin = t.start_date;
-        if (!projectEndMax || t.end_date > projectEndMax) projectEndMax = t.end_date;
+        if (!projectEndMax || inclusiveEnd > projectEndMax) projectEndMax = inclusiveEnd;
 
         const before = snapshot.get(t.id);
         if (!before) return;
 
         const newStart = anyToMysql(t.start_date);
-        const newEnd = anyToMysql(t.end_date);
+        const newEnd = anyToMysql(inclusiveEnd);
         const newConstraintType = t.constraint_type || 'asap';
         const newConstraintDate = t.constraint_date ? anyToMysql(t.constraint_date) : null;
 
@@ -295,29 +297,25 @@ export const runScheduling = ({ context, task_id, triggeredDates, operation, lin
             name: before.name,
             start_at: newStart,
             due_at: newEnd,
+            time_used: before.time_used,
             constraint_type: newConstraintType,
             constraint_date: newConstraintDate
         };
 
-        if (t.id === task_id && (dateChanged || constraintChanged)) {
+        if (t.id === task_id) {
+            // Triggered task is always reported as triggeredTask, regardless
+            // of whether anything actually changed (matches prior behavior
+            // where the trigger's outcome is always surfaced).
             triggeredFinal = taskOutput;
-        } else {
-            if (dateChanged) linkAdjustments.push(taskOutput);
-        }
-
-        if (constraintChanged) {
-            constraintUpdates.push({
-                id: t.id,
-                constraint_type: newConstraintType,
-                constraint_date: newConstraintDate
-            });
+            if (dateChanged || constraintChanged) tasks.push(taskOutput);
+        } else if (dateChanged || constraintChanged) {
+            tasks.push(taskOutput);
         }
     });
 
     gantt.destructor();
 
-    const allIds = [task_id, ...linkAdjustments.map(t => t.id), ...constraintUpdates.map(t => t.id)].filter(Boolean);
-    const impactedTaskIds = [...new Set(allIds)];
+    const impactedTaskIds = [...new Set(tasks.map(t => t.id))];
 
     const calculatedProjectBounds = (projectStartMin && projectEndMax) ? {
         id: project.id,
@@ -330,8 +328,7 @@ export const runScheduling = ({ context, task_id, triggeredDates, operation, lin
         message: 'Calculation complete',
         data: {
             triggeredTask: triggeredFinal,
-            linkAdjustments,
-            constraintUpdates,
+            tasks,
             impactedTaskIds,
             project: calculatedProjectBounds
         }

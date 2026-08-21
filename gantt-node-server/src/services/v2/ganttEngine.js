@@ -77,7 +77,7 @@ const fetchContext = async (workspace_id, project_id) => {
         const placeholders = projectTaskIds.map(() => '?').join(',');
         allTasks = await query(
             `SELECT id, name, start_at, due_at, parent_id, progress,
-                    constraint_type, constraint_date
+                    constraint_type, constraint_date, time_used
              FROM ph_tasks
              WHERE id IN (${placeholders})
                AND workspace_id = ? AND deleted_at IS NULL AND deleted_ancestor_id IS NULL
@@ -134,15 +134,32 @@ export const calculateImpactPreview = async ({ workspace_id, project_id, task_id
 
     if (!result.success) return result;
 
+    // result.data.tasks already excludes the triggered task's own entry
+    // when nothing about it changed, and includes it when it did — but
+    // triggeredTask itself may still need to be surfaced separately even
+    // when unchanged (e.g. drag with no net movement), so union by id.
     const impactedTasks = [];
-    if (result.data.triggeredTask) impactedTasks.push(result.data.triggeredTask);
-    if (result.data.linkAdjustments?.length) impactedTasks.push(...result.data.linkAdjustments);
+    const seenIds = new Set();
+
+    if (result.data.triggeredTask) {
+        impactedTasks.push(result.data.triggeredTask);
+        seenIds.add(result.data.triggeredTask.id);
+    }
+    (result.data.tasks || []).forEach(t => {
+        if (!seenIds.has(t.id)) {
+            impactedTasks.push(t);
+            seenIds.add(t.id);
+        }
+    });
 
     const mappedImpact = impactedTasks.map(t => ({
         id: String(t.id),
         title: t.name,
         start_at: t.start_at,
-        due_at: t.due_at
+        due_at: t.due_at,
+        time_used: t.time_used,
+        constraint_type: t.constraint_type,
+        constraint_date: t.constraint_date
     }));
 
     return {
@@ -202,6 +219,7 @@ export const getProjectData = async ({ workspace_id, project_id }) => {
             start_date: anyToMysql(t.start_at) ?? t.start_at,
             end_date: anyToMysql(t.due_at) ?? t.due_at,
             parent: t.parent_id || 0,
+            time_used: !!t.time_used,
             constraint_type: t.constraint_type || 'asap',
             constraint_date: t.constraint_date ? (anyToMysql(t.constraint_date) ?? toDateOnly(t.constraint_date)) : null
         })),

@@ -7,8 +7,7 @@
 // Only numeric types allowed — Laravel always sends these as 0,1,2,3
 const VALID_LINK_TYPES = ['0', '1', '2', '3'];
 
-const DATE_REGEX = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
-
+const DATE_REGEX = /^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}|\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z?)$/;
 // ─────────────────────────────────────────────────────────────
 // SHARED HELPERS
 // ─────────────────────────────────────────────────────────────
@@ -98,12 +97,12 @@ const validateLinkId = (link_id, errors) => {
  */
 export const validateCalculateRequest = (body) => {
     const errors = [];
-    const { workspace_id, project_id, start_at, due_at, operation, link_id, task_id, link } = body || {};
+    const { workspace_id, project_id, start_at, due_at, operation, link_id, task_id, link, new_type } = body || {};
 
     validateBase(body, errors);
 
     // add_link is NOT valid for /calculate — link is already in DB, use task_id instead
-    const VALID_OPERATIONS = ['delete_link'];
+    const VALID_OPERATIONS = ['delete_link', 'update_link'];
 
     if (operation) {
         if (!VALID_OPERATIONS.includes(operation)) {
@@ -119,6 +118,15 @@ export const validateCalculateRequest = (body) => {
 
         if (operation === 'delete_link') {
             validateLinkId(link_id, errors);
+        }
+
+        if (operation === 'update_link') {
+            validateLinkId(link_id, errors);
+            if (!new_type) {
+                errors.push('new_type is required when operation is update_link');
+            } else if (!VALID_LINK_TYPES.includes(String(new_type))) {
+                errors.push(`Invalid new_type "${new_type}". Allowed values: 0, 1, 2, 3`);
+            }
         }
 
     } else {
@@ -156,11 +164,11 @@ export const validateCalculateRequest = (body) => {
  */
 export const validateImpactRequest = (body) => {
     const errors = [];
-    const { workspace_id, project_id, start_at, due_at, operation, link_id, task_id, link } = body || {};
+    const { workspace_id, project_id, start_at, due_at, operation, link_id, task_id, link, new_type } = body || {};
 
     validateBase(body, errors);
 
-    const VALID_OPERATIONS = ['delete_link', 'add_link'];
+    const VALID_OPERATIONS = ['delete_link', 'add_link', 'update_link'];
 
     if (operation) {
         if (!VALID_OPERATIONS.includes(operation)) {
@@ -187,6 +195,19 @@ export const validateImpactRequest = (body) => {
             }
             validateLinkId(link_id, errors);
         }
+
+        if (operation === 'update_link') {
+            if (link !== undefined) {
+                errors.push('"link" object must not be provided for update_link — use link_id + new_type instead');
+            }
+            validateLinkId(link_id, errors);
+            if (!new_type) {
+                errors.push('new_type is required when operation is update_link');
+            } else if (!VALID_LINK_TYPES.includes(String(new_type))) {
+                errors.push(`Invalid new_type "${new_type}". Allowed values: 0, 1, 2, 3`);
+            }
+        }
+
 
     } else {
         // Task drag/resize preview

@@ -19,8 +19,8 @@ app.use(express.urlencoded({ extended: true }));
 // 2. Inject the middleware directly into the app.use() declaration
 // Now, every route inside ganttRoutes requires the HMAC signature.
 
-app.use(API_PREFIX, ganttAuth, ganttRoutes);
-// app.use(API_PREFIX, ganttRoutes);
+// app.use(API_PREFIX, ganttAuth, ganttRoutes);
+app.use(API_PREFIX, ganttRoutes);
 
 // ─── 404 handler ─────────────────────────────────────────────
 app.use((req, res) => {

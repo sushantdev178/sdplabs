@@ -1,4 +1,4 @@
-// Type definitions for dhtmlxGantt 9.1.3
+// Type definitions for dhtmlxGantt 10.0.0
 // Project: https://dhtmlx.com/docs/products/dhtmlxGantt
 
 type GanttCallback = (...args: any[]) => any;
@@ -142,6 +142,26 @@ export interface GanttEventCallback {
 	 * @param groups an array of dependency loops found in gantt
 	*/
 	"onAutoScheduleCircularLink"(groups: any[]): void;
+
+	/**
+	 * Since v9.2. Fires when the auto-scheduling engine cannot satisfy a hard
+	 * constraint (SNET/SNLT/MSO/MFO/FNET/FNLT) without violating a successor or
+	 * predecessor link. The conflict is surfaced as a passive notification -
+	 * the engine still writes its best-effort dates.
+	 * @param taskId the task whose constraint could not be satisfied
+	 * @param conflict an object describing the failing constraint and the
+	 *                 link/predecessor that caused the conflict
+	*/
+	"onAutoScheduleConflict"(taskId: string | number, conflict: any): void;
+
+	/**
+	 * Since v9.2. Fires when the auto-scheduling engine reaches its iteration
+	 * cap without converging on stable dates. The final pass's dates are still
+	 * written; this event signals that the dataset is over-constrained.
+	 * @param info an object with the iteration count and the set of task ids
+	 *             whose dates were still oscillating at the cap
+	*/
+	"onAutoScheduleNoConverge"(info: any): void;
 
 	/**
 	 * fires before auto scheduling
@@ -1252,7 +1272,8 @@ export interface GanttConfigOptions {
 	correct_work_time: boolean;
 
 	/**
-	 * defines internal implementation of the code of date formatting methods
+	 * @deprecated for date formatting. Date parsing and formatting are always CSP-safe and no longer
+	 * select an implementation based on this option. The value is still read as a secure-environment hint by the lightbox.
 	*/
 	csp: boolean | string;
 
@@ -2011,6 +2032,11 @@ export interface GanttConfigOptions {
 	*/
 	work_time: boolean;
 
+	/**
+	 * stores zoom extension settings that can be passed directly to gantt.ext.zoom.init()
+	*/
+	zoom?: ZoomConfig;
+
 	[customConfig: string]: any;
 }
 
@@ -2036,7 +2062,6 @@ export interface GanttLocaleLabels {
 	icon_details: string;
 	icon_edit: string;
 	icon_delete: string;
-	confirm_closing: string;
 	confirm_deleting: string;
 	section_description: string;
 	section_time: string;
@@ -2334,7 +2359,7 @@ export interface GanttStatic {
 	 * adds a new dependency link
 	 * @param link the link object
 	*/
-	addLink(link: any): string | number;
+	addLink(link: WithOptionalId<SerializedLink | Link>): string | number;
 
 	/**
 	 * displays an additional layer with custom elements for a link in the timeline area
@@ -2362,7 +2387,7 @@ export interface GanttStatic {
 	 * @param parent optional, the parent's id
 	 * @param index optional, the position the task will be added into (0 or greater)
 	*/
-	addTask(task: NewTask, parent?: string | number, index?: number): string | number;
+	addTask(task: WithOptionalId<SerializedTask | Task>, parent?: string | number, index?: number): string | number;
 
 	/**
 	 * displays an additional layer with custom elements for a task in the timeline area
@@ -2543,7 +2568,7 @@ export interface GanttStatic {
 	 * @param parent optional, the parent's id
 	 * @param index optional, the position the task will be added into (0 or greater)
 	*/
-	createTask(task?: NewTask, parent?: string | number, index?: number): string | number;
+	createTask(task?: SerializedTask | Task, parent?: string | number, index?: number): string | number;
 
 	/**
 	 * dataProcessor constructor
@@ -3279,7 +3304,7 @@ export interface GanttStatic {
 	 * @param data a string or object which represents <a href="https://docs.dhtmlx.com/gantt/desktop__loading.html#dataproperties">data</a>
 	 * @param type optional, (<i>'json', 'xml'</i>) the data type. The default value - <i>'json'</i>
 	*/
-	parse(data: string | DataToLoad1 | DataToLoad2, type?: string): void;
+	parse(data: string | GanttData, type?: string): void;
 
 	/**
 	 * activates the specified extensions
@@ -4162,7 +4187,7 @@ export interface Baseline {
 	/**
 	 * the end date of the baseline
 	*/
-	end_date: Date | number,
+	end_date: Date,
 
 	/**
 	 * any custom property
@@ -4196,6 +4221,11 @@ export interface ResourceItem {
 	 * the unit for the assignments
 	*/
 	unit?: string,
+
+	/**
+	 * the value that is assigned by default when adding the assignment in the lightbox section
+	*/
+	default_value?: string | number,
 
 	/**
 	 * any custom property
@@ -4254,6 +4284,324 @@ export interface ResourceAssignment {
 	 * any custom property
 	*/
 	[customProperty: string]: any
+}
+
+/**
+ * Utility type used by the "add" methods (gantt.addTask(), gantt.addLink(), etc.):
+ * the entity `id` becomes optional because Gantt generates one automatically when it
+ * is not provided. The conditional makes the type distribute over unions, so each
+ * member of the union keeps its own shape (e.g. SerializedTask vs Task date fields).
+*/
+export type WithOptionalId<T> = T extends unknown ? Omit<T, "id"> & { id?: string | number } : never
+
+/**
+ * Serialized (JSON-compatible) representation of a task.
+ * Date fields are strings only - this shape can be safely passed through JSON.stringify/JSON.parse.
+ * Used in gantt.parse(), gantt.load() responses, and DataProcessor server exchange.
+ * Methods like gantt.parse() and gantt.addTask() accept both SerializedTask and Task.
+*/
+export interface SerializedTask {
+	/**
+	 * The task id, auto-generated if not set
+	*/
+	id?: string | number,
+
+	/**
+	 * The date when a task is scheduled to begin, as a date string matching the date_format config or ISO 8601.
+	 * If not specified, Gantt will calculate it based on the end_date and duration properties.
+	 * The property becomes optional when setting unscheduled: true.
+	*/
+	start_date?: string,
+
+	/**
+	 * The date when a task is scheduled to be completed, as a date string.
+	 * If not specified, Gantt will calculate it based on the start_date and duration properties.
+	 * The property becomes optional when setting unscheduled: true.
+	*/
+	end_date?: string,
+
+	/**
+	 * The task duration. If not specified, Gantt will calculate it based on the start_date and end_date properties.
+	*/
+	duration?: number,
+
+	/**
+	 * The name of the task. If necessary you may use any other name for this property.
+	 * The property is used in default configurations of different parts of Gantt.
+	*/
+	text?: any,
+
+	/**
+	 * the task type. The available values are stored in the api/gantt_types_config.md object:
+	 * "task" - a regular task (default value).
+	 * "project" - a task that starts, when its earliest child task starts, and ends, when its latest child ends.
+	 * "milestone" - a zero-duration task that is used to mark out important dates of the project.
+	*/
+	type?: string,
+
+	/**
+	 * The id of the parent task. If the specified parent doesn't exist, the task won't be rendered in the Gantt.
+	 * The id of the root task is specified by the api/gantt_root_id_config.md config.
+	*/
+	parent?: number | string,
+
+	/**
+	 * The task's progress (from 0 to 1)
+	*/
+	progress?: number,
+
+	/**
+	 * Specifies whether the task branch will be opened initially (to show child tasks).
+	*/
+	open?: boolean,
+
+	/**
+	 * Defines whether gantt should do auto-scheduling of the task (true or not specified) or not (false)
+	*/
+	auto_scheduling?: boolean,
+
+	/**
+	 * Defines whether the task must be unscheduled.
+	*/
+	unscheduled?: boolean,
+
+	/**
+	 * The date of the task constraint, as a date string.
+	*/
+	constraint_date?: string,
+
+	/**
+	 * The type of the task constraint ("asap", "alap", "snet", "snlt", "fnet", "fnlt", "mso", "mfo").
+	*/
+	constraint_type?: string,
+
+	/**
+	 * Specifies the deadline date for the task, as a date string.
+	*/
+	deadline?: string,
+
+	/**
+	 * Sets the color of the task in the timeline area
+	*/
+	color?: string,
+
+	/**
+	 * The color of the task's text in the timeline area
+	*/
+	textColor?: string,
+
+	/**
+	 * The color of the task progress in the timeline area
+	*/
+	progressColor?: string,
+
+	/**
+	 * Sets the height of the DOM element of the task in the timeline area
+	*/
+	bar_height?: number,
+
+	/**
+	 * Sets the height for the task's row
+	*/
+	row_height?: number,
+
+	/**
+	 * Defines whether a task (type:"task") or milestone (type:"milestone") should be hidden in the timeline area
+	*/
+	hide_bar?: boolean,
+
+	/**
+	 * An array with the baselines
+	*/
+	baselines?: (SerializedBaseline | Baseline)[],
+
+	/**
+	 * Sets the id of the custom calendar to be assigned to the task.
+	*/
+	calendar_id?: number | string,
+
+	/**
+	 * Defines whether the task can be editable in the read-only Gantt chart.
+	*/
+	editable?: boolean,
+
+	/**
+	 * Defines whether the task must be readonly.
+	*/
+	readonly?: boolean,
+
+	/**
+	 * Defines how subtasks of the task must be displayed. Values: "split" | "".
+	*/
+	render?: string,
+
+	/**
+	 * Defines how split task must be displayed: "inline" | "subrow" | "auto".
+	*/
+	split_placement?: "inline" | "subrow" | "auto" | null | undefined,
+
+	/**
+	 * An array with resources assigned to the task.
+	*/
+	resource?: Array<string>,
+
+	/**
+	 * Specifies whether a task (type:"task") or milestone (type:"milestone") should appear on the parent projects.
+	*/
+	rollup?: boolean,
+
+	/**
+	 * The group's id.
+	*/
+	group_id?: string | number,
+
+	/**
+	 * The key of the group.
+	*/
+	key?: string | number,
+
+	/**
+	 * The label of the group.
+	*/
+	label?: string,
+
+	/**
+	 * The id of the target task.
+	*/
+	target?: string,
+
+	[customProperty: string]: any;
+}
+
+/**
+ * Serialized (JSON-compatible) representation of a link.
+ * Used in gantt.parse(), gantt.load() responses, and DataProcessor server exchange.
+*/
+export interface SerializedLink {
+	/**
+	 * The link id
+	*/
+	id: string | number,
+
+	/**
+	 * The id of the source (predecessor) task
+	*/
+	source: string | number,
+
+	/**
+	 * The id of the target (successor) task
+	*/
+	target: string | number,
+
+	/**
+	 * The dependency type.
+	 * "0" = finish-to-start, "1" = start-to-start,
+	 * "2" = finish-to-finish, "3" = start-to-finish
+	*/
+	type: string,
+
+	/**
+	 * Task lag (in duration units)
+	*/
+	lag?: number,
+
+	/**
+	 * Can mark link as readonly
+	*/
+	readonly?: boolean,
+
+	/**
+	 * Can mark link as editable
+	*/
+	editable?: boolean,
+
+	[customProperty: string]: any;
+}
+
+/**
+ * Serialized (JSON-compatible) representation of a baseline.
+ * Date fields are strings only.
+*/
+export interface SerializedBaseline {
+	/**
+	 * The baseline ID
+	*/
+	id?: string | number,
+
+	/**
+	 * The ID of the task the baseline belongs to
+	*/
+	task_id?: string | number,
+
+	/**
+	 * The start date of the baseline, as a date string
+	*/
+	start_date?: string,
+
+	/**
+	 * The duration of the baseline
+	*/
+	duration?: number,
+
+	/**
+	 * The end date of the baseline, as a date string
+	*/
+	end_date?: string,
+
+	[customProperty: string]: any;
+}
+
+/**
+ * Serialized (JSON-compatible) representation of a resource assignment.
+ * Date fields are strings only.
+*/
+export interface SerializedResourceAssignment {
+	/**
+	 * The id of the assignment
+	*/
+	id?: string | number,
+
+	/**
+	 * The ID of the task the resource is assigned to
+	*/
+	task_id: string | number,
+
+	/**
+	 * The ID of the resource that is assigned to the task
+	*/
+	resource_id: string | number,
+
+	/**
+	 * The quantity of the resources assigned to a task
+	*/
+	value?: number | string,
+
+	/**
+	 * The calculation mode of the time of the resource assignment: "default"|"fixedDates"|"fixedDuration"
+	*/
+	mode?: string,
+
+	/**
+	 * The difference between the assignment start date and the task start date
+	*/
+	delay?: number,
+
+	/**
+	 * The date the assignment should start, as a date string
+	*/
+	start_date?: string,
+
+	/**
+	 * The duration of the assignment
+	*/
+	duration?: number,
+
+	/**
+	 * The date the assignment should end, as a date string
+	*/
+	end_date?: string,
+
+	[customProperty: string]: any;
 }
 
 export interface GridColumn {
@@ -4852,7 +5200,16 @@ export interface AutoSchedulingConfig {
 	/**
 	 * Defines whether tasks should inherit the constraint type from their parent project.
 	 */
-	project_constraint?: boolean
+	project_constraint?: boolean,
+
+	/**
+	 * Since v9.2. When enabled, the auto-scheduling engine enforces strict calendar
+	 * coherence - task start/end dates must always fall on working time per the
+	 * task's own calendar. When disabled (default), the engine preserves v1's
+	 * legacy behaviour where edge-projected dates may land on non-working time
+	 * before being normalised on the next write.
+	 */
+	strict_calendar?: boolean
 
 
 }
@@ -4885,27 +5242,32 @@ export interface BaselineConfig {
 	bar_height: number
 }
 
-export interface DataToLoad1 {
+export interface GanttDataWithData {
 
 	/**
 	 * the array with the task data
 	*/
-	data: [] | NewTask[]
+	data: [] | (SerializedTask | Task)[]
 	tasks?: undefined
 	/**
 	 * the array with the link data
 	*/
-	links?: Link[]
+	links?: (SerializedLink | Link)[]
 
 	/**
 	 * the array with the resource data
 	*/
-	resources?: NewResourceItem[]
+	resources?: Partial<ResourceItem>[]
 
 	/**
 	 * the array with the assignment data
 	*/
-	assignments?: NewAssignmentItem[]
+	assignments?: (SerializedResourceAssignment | ResourceAssignment)[]
+
+	/**
+	 * the array with the baseline data
+	*/
+	baselines?: (SerializedBaseline | Baseline)[]
 
 	/**
 	 * the object that has the arrays with the custom data
@@ -4913,27 +5275,32 @@ export interface DataToLoad1 {
 	collections?: Сollections
 }
 
-export interface DataToLoad2 {
+export interface GanttDataWithTasks {
 
 	/**
 	 * the array with the task data
 	*/
-	tasks: [] | NewTask[]
+	tasks: [] | (SerializedTask | Task)[]
 	data?: undefined
 	/**
 	 * the array with the link data
 	*/
-	links?: Link[]
+	links?: (SerializedLink | Link)[]
 
 	/**
 	 * the array with the resource data
 	*/
-	resources?: NewResourceItem[]
+	resources?: Partial<ResourceItem>[]
 
 	/**
 	 * the array with the assignment data
 	*/
-	assignments?: NewAssignmentItem[]
+	assignments?: (SerializedResourceAssignment | ResourceAssignment)[]
+
+	/**
+	 * the array with the baseline data
+	*/
+	baselines?: (SerializedBaseline | Baseline)[]
 
 	/**
 	 * the object that has the arrays with the custom data
@@ -4941,29 +5308,36 @@ export interface DataToLoad2 {
 	collections?: Сollections
 }
 
+export type GanttData = GanttDataWithData | GanttDataWithTasks
+
 /**
- * the task object that will be added to Gantt. It can have the following properties:
- * @param optional, the task ID, auto-generated if not set.
- * @param optional, the date when a task is scheduled to begin.
- * @param optional, the task duration.
- * @param optional, the date when a task is scheduled to be completed.
- * @param optional, the task name.
- * @param optional, specifies if the task will be opened on load (to show child tasks).
- * @param optional, the ID of the parent task.
- * @param optional, the date of the task constraint.
- * @param any other property you want to add, including the ones from the [**Task** object](desktop/task_properties.md)
+ * @deprecated Use GanttDataWithData instead
 */
-export type NewTask = string | {} | {
-	id?: string | number,
-	start_date?: string | Date,
-	duration?: number,
-	end_date?: string | Date,
-	text?: string,
-	open?: boolean,
-	parent?: string | number,
-	constraint_date?: string | Date,
-	[customProperty: string]: any
-}
+export type DataToLoad1 = GanttDataWithData
+
+/**
+ * @deprecated Use GanttDataWithTasks instead
+*/
+export type DataToLoad2 = GanttDataWithTasks
+
+/**
+ * The shape accepted when you *provide* task data to Gantt - `gantt.parse()`,
+ * `gantt.addTask()`, the `tasks` config/prop, your own application stores, etc.
+ *
+ * Date fields may be either a `Date` or a `string`, and every field (including
+ * `id`) is optional - Gantt generates an id when one is not supplied.
+ *
+ * Use `TaskInput` when you are *authoring or holding* task data. Use `Task`
+ * (live, `Date` dates, runtime `$`-fields) when reading Gantt's own task objects,
+ * and `SerializedTask` (JSON form, `string` dates) for serialized/server data.
+*/
+export type TaskInput = Partial<SerializedTask> | Partial<Task>
+
+/**
+ * Legacy alias of {@link TaskInput}, kept for backwards compatibility.
+ * Prefer `TaskInput` in new code.
+*/
+export type NewTask = TaskInput | string | {}
 
 
 /**
@@ -4976,15 +5350,7 @@ export type NewTask = string | {} | {
  * @param optional, the value that is assigned by default when adding the assignment in the lightbox section
  * @param any other property you want to add
 */
-export type NewResourceItem = {
-	id?: string | number,
-	parent?: string | number,
-	text?: string,
-	open?: boolean,
-	unit?: string | number,
-	default_value?: string | number,
-	[customProperty: string]: any
-}
+export type NewResourceItem = Partial<ResourceItem>
 
 
 /**
@@ -5000,18 +5366,10 @@ export type NewResourceItem = {
  * @param optional, the date the assignment should end
  * @param any other property you want to add
 */
-export type NewAssignmentItem = {
-	id?: string | number,
-	task_id: string | number,
-	resource_id: string | number,
-	value: number | string,
-	mode?: string,
-	delay?: number,
-	start_date?: string | Date,
-	duration?: number,
-	end_date?: string | Date,
-	[customProperty: string]: any
-}
+/**
+ * @deprecated Use SerializedResourceAssignment | ResourceAssignment instead
+*/
+export type NewAssignmentItem = SerializedResourceAssignment | ResourceAssignment
 
 
 export interface Сollections {
@@ -5458,7 +5816,7 @@ export interface DateHelpers {
 	copy(date: Date): Date,
 
 	/**
-	 * resets the time part of the provided date to 00:00:00
+	 * returns a copy of the date with the time part set to 00:00:00. Does not modify the passed date
 	 * @param the date object to format
 	*/
 	date_part(date: Date): Date,
@@ -5471,7 +5829,7 @@ export interface DateHelpers {
 	date_to_str(format: string, utc?: boolean): Function,
 
 	/**
-	 * resets the time part of the provided date to 00:00:00. Alias of the  date_part  method. Used by the Day view to set the display date and can be redefined to provide the default behaviour
+	 * returns a copy of the date with the time part set to 00:00:00, without modifying the passed date. Alias of the  date_part  method. Used by the Day view to set the display date and can be redefined to provide the default behaviour
 	 * @param the date object to format
 	*/
 	day_start(date: Date): Date,
@@ -6842,6 +7200,116 @@ export interface ZoomLevel {
 	scales: Scales
 }
 
+export interface ZoomToFitRange {
+
+	/**
+	 * the start date of the target range
+	*/
+	start_date: Date
+
+	/**
+	 * the end date of the target range
+	*/
+	end_date: Date
+}
+
+export interface ZoomToFitOptions {
+
+	/**
+	 * defines whether gantt should fit the currently visible rows or the whole dataset
+	*/
+	scope?: "visible" | "all"
+
+	/**
+	 * allows fitting a subtree or project by its task id
+	*/
+	taskId?: string | number
+
+	/**
+	 * allows fitting an explicit date range
+	*/
+	range?: ZoomToFitRange
+
+	/**
+	 * defines whether zoomToFit should preserve or overwrite the current start_date/end_date bounds
+	*/
+	rangeMode?: "auto" | "preserve" | "target"
+
+	/**
+	 * adds extra columns before the first and after the last fitted date
+	*/
+	padding?: number
+
+	/**
+	 * limits the most detailed zoom level that zoomToFit can pick
+	*/
+	minLevel?: string | number
+
+	/**
+	 * limits the most coarse zoom level that zoomToFit can pick
+	*/
+	maxLevel?: string | number
+}
+
+export interface ZoomToFitContext {
+
+	/**
+	 * the date range that should be fitted into the timeline
+	*/
+	range: ZoomToFitRange
+
+	/**
+	 * the available timeline width, in pixels
+	*/
+	viewportWidth: number
+
+	/**
+	 * the zoom levels considered for fitting (fit.levels, or the interactive zoom levels)
+	*/
+	levels: ZoomLevel[]
+
+	/**
+	 * the number of extra columns added around the fitted range
+	*/
+	padding: number
+
+	/**
+	 * the level index the built-in algorithm picked
+	*/
+	defaultLevel: number
+}
+
+export interface ZoomToFitConfig extends ZoomToFitOptions {
+
+	/**
+	 * an optional set of zoom levels used only for "zoom to fit"; defaults to the interactive zoom levels
+	*/
+	levels?: ZoomLevel[]
+
+	/**
+	 * overrides the level selection; returns a level name/index, false to abort, or nothing to keep the default
+	*/
+	handler?: (context: ZoomToFitContext) => string | number | boolean | void
+}
+
+export interface ZoomConfig {
+	levels?: ZoomLevel[],
+	handler?: ((
+		e: Event,
+	) => void),
+	startDate?: Date,
+	endDate?: Date,
+	activeLevelIndex?: number,
+	widthStep?: number,
+	minColumnWidth?: number,
+	maxColumnWidth?: number,
+	useKey?: string,
+	trigger?: string | null | undefined,
+	element?: HTMLElement | (() => HTMLElement),
+	fit?: ZoomToFitConfig,
+	current?: string | number,
+}
+
 export interface ZoomMethods {
 
 	/**
@@ -6861,21 +7329,7 @@ export interface ZoomMethods {
 	 * @param a DOM element over which zooming is triggered or a function that returns a DOM element
 	*/
 	init(
-		zoomConfig: {
-			levels: ZoomLevel[],
-			handler?: ((
-				e: Event,
-			) => void),
-			startDate?: Date,
-			endDate?: Date,
-			activeLevelIndex?: number,
-			widthStep?: number,
-			minColumnWidth?: number,
-			maxColumnWidth?: number,
-			useKey?: string,
-			trigger?: string | null | undefined,
-			element?: HTMLElement | (() => HTMLElement),
-		}
+		zoomConfig: ZoomConfig
 	): void,
 
 	/**
@@ -6903,6 +7357,17 @@ export interface ZoomMethods {
 	 * decreases the current zooming level
 	*/
 	zoomOut(): void,
+
+	/**
+	 * fits the selected range into the current timeline width by choosing the most detailed matching zoom level
+	 * @param optional, zoomToFit settings
+	*/
+	zoomToFit(options?: ZoomToFitOptions): boolean,
+
+	/**
+	 * restores the zoom level and time scale that were active before the first zoomToFit call
+	*/
+	resetZoom(): boolean,
 
 	/**
 	 * attaches an event handler
@@ -7262,6 +7727,23 @@ export interface Ext {
 
 	[customMethod: string]: any;
 }
+
+export type HtmlTemplatePolicy =
+	| "basic-sanitize"
+	| "escape"
+	| "unsafe-html"
+	| {
+		mode: "sanitize";
+		sanitize: (html: string) => string;
+	};
+
+export declare function escapeHTML(value: string): string;
+
+export declare function allowRawHTML<T>(fn: T): T;
+
+export declare function basicSanitizeHTML(html: string): string;
+
+export declare function applyTemplatePolicy(result: unknown, policy: HtmlTemplatePolicy | undefined, templateFn?: unknown): unknown;
 
 declare var gantt: GanttStatic;
 

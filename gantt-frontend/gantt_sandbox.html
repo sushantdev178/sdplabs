@@ -1,0 +1,533 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="UTF-8">
+    <title>Gantt Frontend</title>
+    <script src="codebase/dhtmlxgantt.js"></script>
+    <link rel="stylesheet" href="codebase/dhtmlxgantt.css">
+    <style>
+        html,
+        body {
+            height: 100%;
+            margin: 0;
+            font-family: Arial, sans-serif;
+        }
+
+        #toolbar {
+            padding: 10px 14px;
+            background: #f8f9fa;
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            flex-wrap: wrap;
+            border-bottom: 1px solid #cfd8dc;
+        }
+
+        .control-group {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        #toolbar input[type="number"] {
+            width: 80px;
+            padding: 4px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        }
+
+        #toolbar button {
+            padding: 5px 12px;
+            cursor: pointer;
+            background: #0288d1;
+            color: white;
+            border: none;
+            border-radius: 4px;
+        }
+
+        #toolbar button:hover {
+            background: #01579b;
+        }
+
+        .flag-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 3px;
+            font-size: 11px;
+            font-weight: bold;
+            margin: 0 2px;
+        }
+
+        .flag-enabled {
+            background: #c8e6c9;
+            color: #2e7d32;
+        }
+
+        .flag-disabled {
+            background: #ffcdd2;
+            color: #c62828;
+        }
+
+        #status {
+            font-size: 13px;
+            color: #546e7a;
+            font-style: italic;
+            margin-left: auto;
+            padding-right: 10px;
+        }
+
+        #gantt_here {
+            width: 100%;
+            height: calc(100vh - 54px);
+        }
+
+        .weekend_cell {
+            background-color: #f5f5f5 !important;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="toolbar">
+        <div class="control-group">
+            <label>WS ID:</label><input type="number" id="txtWsId" value="1187">
+            <label>Project ID:</label><input type="number" id="txtProjId" value="40641">
+            <button onclick="loadProject()">Load</button>
+        </div>
+        <div id="projectFlags"
+            style="display:none; border-left:1px solid #cfd8dc; padding-left:16px; align-items:center; gap:4px;">
+            <span id="flagAutoSchedule" class="flag-badge">Auto</span>
+            <span id="flagWorkTime" class="flag-badge">Work</span>
+            <span id="flagMoveSubtasks" class="flag-badge">Move</span>
+            <span id="flagGapBehavior" class="flag-badge">Gap</span>
+        </div>
+        <button style="background:#546e7a;" onclick="resetStorage()">Reset</button>
+        <button onclick="gantt.ext.zoom.zoomIn()">Zoom In</button>
+        <button onclick="gantt.ext.zoom.zoomOut()">Zoom Out</button>
+        <div id="status">Ready</div>
+    </div>
+    <div id="gantt_here"></div>
+
+    <script>
+        const API_BASE = "http://192.168.1.44:3001/api/gantt/v2";
+        let currentWsId = null, currentProjId = null;
+
+        // ── DHTMLX BASE CONFIG ─────────────────────────────────────────────
+        // These are fixed — project flags applied in renderGantt() below.
+        // Any change here MUST be mirrored in node server dhtmlxScheduler.js createGanttInstance().
+
+        gantt.plugins({ auto_scheduling: true, marker: true });
+
+        gantt.ext.zoom.init({
+            levels: [
+                { name: "Days", scale_height: 60, min_column_width: 70, scales: [{ unit: "week", step: 1, format: "Week %W" }, { unit: "day", step: 1, format: "%d %M" }] },
+                { name: "Weeks", scale_height: 60, min_column_width: 50, scales: [{ unit: "month", step: 1, format: "%F %Y" }, { unit: "week", step: 1, format: "W%W" }] },
+                { name: "Months", scale_height: 60, min_column_width: 70, scales: [{ unit: "year", step: 1, format: "%Y" }, { unit: "month", step: 1, format: "%M" }] }
+            ]
+        });
+
+        // date_format MUST match node server gantt.config.date_format exactly
+        gantt.config.date_format = "%Y-%m-%d %H:%i:%s";
+        // gantt.config.utc removed — parseDate() uses local time, utc=true caused double-shift bar offset
+        // gantt.config.correct_work_time = true;
+        gantt.config.duration_unit = 'day';
+        gantt.config.scale_unit = "day";
+        gantt.config.step = 1;
+        gantt.config.date_scale = "%d %M";
+        gantt.config.subscales = [{ unit: "month", step: 1, date: "%F %Y" }];
+        gantt.config.min_column_width = 50;
+        gantt.config.fit_tasks = true;
+        gantt.config.sort = true;
+
+        // auto_types: false — parents stay type:'task', no auto-promotion.
+        // MUST match node server: gantt.config.auto_types = false
+        gantt.config.auto_types = false;
+
+        // auto_scheduling disabled until renderGantt() re-enables it from project flag
+        gantt.config.auto_scheduling = {
+            enabled: false,
+            show_constraints: true,
+            apply_constraints: true,
+            gap_behavior: 'preserve'
+            // 'strict' removed — not a valid DHTMLX key
+        };
+
+        gantt.addMarker({
+            start_date: gantt.config.project_start,
+            text: "project start"
+        });
+
+        gantt.config.work_time = false; // overridden in renderGantt()
+
+        gantt.config.constraint_types = {
+            ASAP: "asap", ALAP: "alap", SNET: "snet", FNET: "fnet",
+            SNLT: "snlt", FNLT: "fnlt", MSO: "mso", MFO: "mfo"
+        };
+        gantt.locale.labels = {
+            ...gantt.locale.labels,
+            constraint_type_asap: "ASAP", constraint_type_alap: "ALAP",
+            constraint_type_snet: "SNET", constraint_type_fnet: "FNET",
+            constraint_type_snlt: "SNLT", constraint_type_fnlt: "FNLT",
+            constraint_type_mso: "MSO", constraint_type_mfo: "MFO"
+        };
+        gantt.serverList("constraint_types", [
+            { key: "asap", label: "ASAP" }, { key: "alap", label: "ALAP" },
+            { key: "snet", label: "SNET" }, { key: "fnet", label: "FNET" },
+            { key: "snlt", label: "SNLT" }, { key: "fnlt", label: "FNLT" },
+            { key: "mso", label: "MSO" }, { key: "mfo", label: "MFO" }
+        ]);
+
+        gantt.config.lightbox.sections = [
+            { name: "description", height: 38, map_to: "text", type: "textarea", focus: true },
+            { name: "constraint", type: "constraint", map_to: { constraint_type: "constraint_type", constraint_date: "constraint_date" } },
+            { name: "time", type: "duration", map_to: "auto", time_format: ["%d", "%m", "%Y", "%H:%i"] }
+        ];
+
+        gantt.config.columns = [
+            { name: "text", tree: true, width: 250, resize: true, label: "Task name" },
+            { name: "start_date", align: "center", width: 110, label: "Start Date" },
+            { name: "end_date", align: "center", width: 110, label: "End Date" },
+            { name: "duration", align: "center", width: 70, label: "Days" },
+            {
+                name: "constraint_type", align: "center", width: 90, label: "Constraint",
+                template: function (task) {
+                    const type = gantt.getConstraintType(task);
+                    if (!type) return "ASAP";
+                    return gantt.locale.labels["constraint_type_" + type] || type.toUpperCase();
+                },
+                editor: { type: "select", map_to: "constraint_type", options: gantt.serverList("constraint_types") }
+            },
+            {
+                name: "constraint_date", align: "center", width: 110, label: "Constraint Date",
+                template: function (task) {
+                    const ct = gantt.config.constraint_types;
+                    if (task.constraint_date && task.constraint_type !== ct.ASAP && task.constraint_type !== ct.ALAP)
+                        return gantt.templates.task_date(task.constraint_date);
+                    return "";
+                }
+            },
+            { name: "add", width: 44 }
+        ];
+
+        gantt.templates.timeline_cell_class = function (task, date) {
+            return gantt.isWorkTime({ date, task }) ? "" : "weekend_cell";
+        };
+        gantt.templates.scale_cell_class = function (date) {
+            return gantt.isWorkTime(date) ? "" : "weekend_cell";
+        };
+
+        // ── HELPERS ────────────────────────────────────────────────────────
+
+        // DB link type strings → DHTMLX numeric strings
+        const linkTypeMap = {
+            'finish_to_start': '0', 'start_to_start': '1',
+            'finish_to_finish': '2', 'start_to_finish': '3',
+            '0': '0', '1': '1', '2': '2', '3': '3'
+        };
+
+        function parseDate(str) {
+            if (!str || typeof str !== 'string') return null;
+            const m = str.match(/^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?)?/);
+            if (!m) return null;
+            const [, y, mo, d, h = '0', min = '0', sec = '0'] = m;
+            // Create date as UTC (no local timezone offset)
+            return new Date(+y, +mo - 1, +d, +h, +min, +sec);
+        }
+        function formatDate(date) {
+            if (!date || !(date instanceof Date) || isNaN(date)) return null;
+            const pad = n => String(n).padStart(2, '0');
+            return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:00`;
+        }
+
+        // Returns true if a is an ancestor of b in the gantt tree
+        function isAncestor(aid, bid) {
+            if (!aid || !bid || String(aid) === String(bid)) return false;
+            let t = gantt.isTaskExists(bid) ? gantt.getTask(bid) : null;
+            while (t && t.parent && t.parent != 0) {
+                if (String(t.parent) === String(aid)) return true;
+                t = gantt.isTaskExists(t.parent) ? gantt.getTask(t.parent) : null;
+            }
+            return false;
+        }
+
+        // Returns true if a and b are in the same hierarchy chain (ancestor/descendant)
+        function areInSameHierarchy(a, b) {
+            return isAncestor(a, b) || isAncestor(b, a);
+        }
+
+        // ── RENDER ─────────────────────────────────────────────────────────
+        let initialized = false;
+        let isLoading = false;
+
+        function setFlag(id, text, enabled) {
+            const el = document.getElementById(id);
+            if (!el) return;
+            el.textContent = text;
+            el.className = "flag-badge " + (enabled ? "flag-enabled" : "flag-disabled");
+        }
+
+        function shiftDescendants(parentId, offsetMs) {
+            gantt.eachTask(function (task) {
+                if (String(task.id) === String(parentId)) return;
+
+                if (isAncestor(parentId, task.id)) {
+                    task.start_date = new Date(task.start_date.getTime() + offsetMs);
+                    task.end_date = new Date(task.end_date.getTime() + offsetMs);
+                    gantt.updateTask(task.id);
+                }
+            });
+        }
+
+function renderGantt(data) {
+            isLoading = true;
+            gantt.clearAll();
+            
+            if (!initialized) {
+                gantt.init("gantt_here");
+                initEvents();
+                initialized = true;
+            }
+
+            // 1. ADD DEFENSIVE VALIDATION: Check if the payload is completely malformed
+            if (!data || !data.project) {
+                console.error("Invalid data payload received:", data);
+                document.getElementById('status').textContent = 'Error: Missing project data in API response';
+                isLoading = false;
+                return; // Stop execution before it crashes
+            }
+
+            // 2. ADD FALLBACKS: Safely unpack the data, defaulting to empty structures if missing
+            const project = data.project || {};
+            const workspace = data.workspace || {};
+            const tasks = data.tasks || [];
+            const links = data.links || [];
+
+            // Now these will evaluate to false/undefined safely instead of throwing a TypeError
+            const autoSchedule = !!project.auto_schedule_tasks;
+            const workTime = !!project.restrict_tasks_to_working_days;
+            const moveSubtasks = !!project.move_subtasks_with_parent;
+
+            // Force correct gap behavior from DB
+            const gapBehavior = project.auto_schedule_tasks_gap === 'compress' ? 'compress' : 'preserve';
+
+            console.log("=== GAP BEHAVIOR FROM DB ===", gapBehavior);
+
+            if (project.start_date) {
+                gantt.config.project_start = parseDate(project.start_date);
+            }
+
+            // Set config EARLY and fully
+            gantt.config.auto_scheduling = {
+                enabled: false,
+                show_constraints: true,
+                apply_constraints: true,
+                gap_behavior: gapBehavior
+                // 'strict' removed — not a valid DHTMLX key
+            };
+
+            gantt.config.work_time = workTime;
+            gantt.config.correct_work_time = workTime;
+            gantt.config.drag_project = moveSubtasks;
+
+            // Work calendar
+            const jsWorkDays = workspace.work_days || [1, 2, 3, 4, 5];
+            for (let d = 0; d <= 6; d++) {
+                gantt.setWorkTime({ day: d, hours: jsWorkDays.includes(d) ? ["00:00-24:00"] : false });
+            }
+            (workspace.holidays || []).forEach(h => gantt.setWorkTime({ date: new Date(h + "T00:00:00"), hours: false }));
+
+            // Parse
+            const PROJ_ID = 'proj_' + project.id;
+            const ganttData = [{ id: PROJ_ID, text: project.name || 'Project', type: 'project', parent: 0, open: true }];
+
+            tasks.forEach(t => {
+                ganttData.push({
+                    id: t.id,
+                    text: t.text,
+                    start_date: parseDate(t.start_date),
+                    end_date: parseDate(t.end_date),
+                    parent: t.parent || PROJ_ID,
+                    type: 'task',
+                    constraint_type: t.constraint_type || 'asap',
+                    constraint_date: t.constraint_date ? parseDate(t.constraint_date) : null,
+                    open: true
+                });
+            });
+
+            const ganttLinks = links.map(l => ({
+                id: l.id, source: l.source, target: l.target, type: linkTypeMap[l.type] || '0', lag: l.lag || 0
+            }));
+
+            gantt.parse({ data: ganttData, links: ganttLinks });
+
+            // Enable AFTER parse
+            gantt.config.auto_scheduling.enabled = autoSchedule;
+            if (autoSchedule) {
+                gantt.autoSchedule();
+            }
+
+            document.getElementById("projectFlags").style.display = "flex";
+
+            setFlag("flagAutoSchedule", "Auto: " + autoSchedule, autoSchedule);
+            setFlag("flagWorkTime", "Work: " + workTime, workTime);
+            setFlag("flagMoveSubtasks", "Move: " + moveSubtasks, moveSubtasks);
+            setFlag("flagGapBehavior", "Gap: " + gapBehavior, gapBehavior === "preserve");
+
+            console.log("AUTO", autoSchedule, "WORK", workTime, "MOVE", moveSubtasks, "GAP", gapBehavior);
+
+            isLoading = false;
+        }
+
+        // ── EVENTS ─────────────────────────────────────────────────────────
+
+        function initEvents() {
+            // Block links to self, to project container, within same hierarchy, and circular
+            gantt.attachEvent("onBeforeLinkAdd", function (id, link) {
+                const s = String(link.source), t = String(link.target);
+                if (s === t) {
+                    gantt.message({ type: "error", text: "Cannot link task to itself" });
+                    return false;
+                }
+                if (s.startsWith('proj_') || t.startsWith('proj_')) {
+                    gantt.message({ type: "error", text: "Cannot link project container" });
+                    return false;
+                }
+                if (areInSameHierarchy(s, t)) {
+                    gantt.message({ type: "error", text: "Cannot link tasks in the same hierarchy" });
+                    return false;
+                }
+                if (gantt.isCircularLink(link)) {
+                    gantt.message({ type: "error", text: "Circular dependency detected" });
+                    return false;
+                }
+                link.type = linkTypeMap[link.type] || '0';
+                return true;
+            });
+
+            // After link add/delete: run autoSchedule then notify backend
+            gantt.attachEvent("onAfterLinkAdd", function () { if (gantt.config.auto_scheduling.enabled) gantt.autoSchedule(); save(); });
+            gantt.attachEvent("onAfterLinkDelete", function (id, link) {
+                if (gantt.config.auto_scheduling.enabled) {
+                    const task = gantt.getTask(link.target);
+                    if (task && task.constraint_type === 'asap') {
+                        // gantt.autoSchedule(task.id);
+                        gantt.autoSchedule();  // safer to autoSchedule all tasks after link delete
+                    }
+                }
+                save();
+                return true;
+            });
+            // After task update (inline edit etc.)
+            gantt.attachEvent("onAfterTaskUpdate", function (id) {
+                if (String(id).startsWith('proj_')) return;
+                if (gantt.config.auto_scheduling.enabled) gantt.autoSchedule();
+                save();
+            });
+
+            gantt.attachEvent("onBeforeTaskDrag", function (id, mode) {
+                const task = gantt.getTask(id);
+                if (task) task.$drag_start_date = new Date(task.start_date);
+                return true;
+            });
+
+            // After drag — apply SNET on move, run autoSchedule on both move and resize
+            gantt.attachEvent("onAfterTaskDrag", function (id, mode) {
+                if (String(id).startsWith('proj_')) return;
+                if (mode !== "move" && mode !== "resize") return;
+                const task = gantt.getTask(id);
+                if (!task) return;
+
+                if (mode === "move") {
+
+                    const original = task.$drag_start_date || null;
+
+                    if (original) {
+                        const offsetMs = task.start_date.getTime() - original.getTime();
+
+                        if (gantt.config.drag_project && offsetMs !== 0) {
+                            shiftDescendants(task.id, offsetMs);
+                        }
+                    }
+
+                    if (!task.constraint_type || task.constraint_type === 'asap') {
+                        task.constraint_type = 'snet';
+                        task.constraint_date = new Date(task.start_date);
+                    } else if (task.constraint_type !== 'alap') {
+                        task.constraint_date = new Date(task.start_date);
+                    }
+                    gantt.updateTask(task.id);
+                }
+
+                if (gantt.config.auto_scheduling.enabled) gantt.autoSchedule();
+                save();
+            });
+
+            // onAfterAutoSchedule fires ONCE per full autoSchedule run (not per task).
+            // onAfterTaskAutoSchedule fires per-task — causes multiple save() calls.
+            gantt.attachEvent("onAfterAutoSchedule", function () {
+                save();
+            });
+        }
+
+        // ── STORAGE ─────────────────────────────────────────────────────────
+
+        function storageKey() { return `gantt_${currentWsId}_${currentProjId}`; }
+
+        function save() {
+            if (!currentWsId || !currentProjId || isLoading) return;
+            try {
+                const tasks = gantt.getTaskByTime()
+                    .filter(t => !String(t.id).startsWith('proj_'))
+                    .map(t => ({
+                        id: t.id, text: t.text,
+                        start_date: formatDate(t.start_date),
+                        end_date: formatDate(t.end_date),
+                        duration: t.duration,
+                        parent: (t.parent && String(t.parent).startsWith('proj_')) ? 0 : (t.parent || 0),
+                        constraint_type: t.constraint_type || 'asap',
+                        constraint_date: t.constraint_date ? formatDate(t.constraint_date) : null
+                    }));
+                const links = gantt.getLinks().map(l => ({
+                    id: l.id, source: l.source, target: l.target, type: String(l.type)
+                }));
+                localStorage.setItem(storageKey(), JSON.stringify({ tasks, links }));
+            } catch (e) { console.warn('Save failed', e); }
+        }
+
+        function clearStorage() {
+            if (currentWsId && currentProjId) localStorage.removeItem(storageKey());
+        }
+
+        // ── LOAD ────────────────────────────────────────────────────────────
+
+        async function loadProject() {
+            const wsId = document.getElementById('txtWsId').value;
+            const projId = document.getElementById('txtProjId').value;
+            if (!wsId || !projId) return;
+            currentWsId = wsId; currentProjId = projId;
+
+            document.getElementById('status').textContent = 'Loading...';
+            try {
+                const resp = await fetch(`${API_BASE}/project-data?workspace_id=${wsId}&project_id=${projId}&_=${Date.now()}`);
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                const apiData = await resp.json();
+
+                // Always load fresh from API — localStorage is only used for
+                // preserving state between actions on the same session load,
+                // not across page loads (clearStorage called above resets it)
+renderGantt(apiData.data);        
+    } catch (err) {
+                document.getElementById('status').textContent = 'Error: ' + err.message;
+            }
+        }
+
+        function resetStorage() {
+            clearStorage();
+            if (currentWsId && currentProjId) loadProject();
+            else alert("Load a project first.");
+        }
+    </script>
+</body>
+
+</html>

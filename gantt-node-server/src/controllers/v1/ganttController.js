@@ -5,14 +5,14 @@ import {
     validateImpactRequest,
     validateProjectDataRequest,
     validateStandaloneLinkRequest
-} from '../validators/ganttValidator.js';
+} from '../../validators/ganttValidator.js';
 import {
     recalculateImpact,
     calculateImpactPreview,
     validateStandaloneLink,
     getProjectData
-} from '../services/v1/ganttEngine.js';
-import { successResponse, errorResponse, validationError } from '../utils/response.js';
+} from '../../services/v1/ganttEngine.js';
+import { successResponse, errorResponse, validationError } from '../../utils/response.js';
 
 // POST /api/gantt/calculate
 export const calculate = async (req, res) => {
@@ -20,7 +20,7 @@ export const calculate = async (req, res) => {
         const { isValid, errors } = validateCalculateRequest(req.body);
         if (!isValid) return validationError(res, errors, 'Invalid calculation request');
 
-        const { workspace_id, project_id, task_id, start_at, due_at, operation, link_id } = req.body;
+        const { workspace_id, project_id, task_id, start_at, due_at, operation, link_id, new_type } = req.body;
         const result = await recalculateImpact({
             workspace_id,
             project_id,
@@ -28,7 +28,8 @@ export const calculate = async (req, res) => {
             start_at,
             due_at,
             operation: operation || null,
-            link_id
+            link_id,
+            new_type: new_type || null   // ADD THIS
         });
 
         if (!result.success) {
@@ -47,7 +48,7 @@ export const calculateImpact = async (req, res) => {
         const { isValid, errors } = validateImpactRequest(req.body);
         if (!isValid) return validationError(res, errors, 'Invalid impact calculation request');
 
-        const { workspace_id, project_id, task_id, start_at, due_at, operation, link_id, link } = req.body;
+        const { workspace_id, project_id, task_id, start_at, due_at, operation, link_id, link, new_type } = req.body;
 
         const result = await calculateImpactPreview({
             workspace_id,
@@ -57,7 +58,8 @@ export const calculateImpact = async (req, res) => {
             due_at,
             operation: operation || null,
             link_id: link_id || null, // pass it down
-            link: link || null        // pass it down       
+            link: link || null,        // pass it down 
+            new_type: new_type || null   // ADD THIS      
         });
 
         if (!result.success) {
