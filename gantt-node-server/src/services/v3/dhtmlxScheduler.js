@@ -1,8 +1,12 @@
-// src/services/dhtmlxScheduler.js
+// src/services/v3/dhtmlxScheduler.js
+//
+// v3 — whole-day approach + milestone support.
+// FIX: removed redundant enforceMixedTimeUsedLinks; use existing whole-day normalization.
+// FIX: store duration from Gantt after parse for accurate date updates.
 
 import { createRequire } from 'module';
 import { toDate, anyToMysql, toDateOnly, toMin } from '../../utils/dateHelper.js';
-import { hasCircularLink, hasHierarchyLink } from '../../validators/ganttValidator.js';
+import { hasCircularLink } from '../../validators/ganttValidator.js';
 
 const require = createRequire(import.meta.url);
 const { Gantt } = require('@dhx/gantt-node');
@@ -28,15 +32,8 @@ const isMidnight = (date) => (
     date.getHours() === 0 && date.getMinutes() === 0 &&
     date.getSeconds() === 0 && date.getMilliseconds() === 0
 );
-// Gated wrappers — use these everywhere instead of the raw helpers above.
-// The shift applies ONLY when time_used=false AND the date is actually
-// sitting at midnight (a true exclusive-boundary case). If a time_used=false
-// task's date carries a real, non-midnight clock time — e.g. inherited via
-// a link cascade from a time_used=true predecessor, or produced by a
-// partial-hour working-time window — treat it as-is, no shift. Blindly
-// shifting a real clock time by a calendar day (rather than a true midnight
-// boundary) produces nonsense like a due date landing before the start date.
-const toGanttEnd = (date, timeUsed) => (timeUsed || !isMidnight(date)) ? date : addOneDay(date);
+
+const toGanttEnd = (date, timeUsed) => (timeUsed ? date : addOneDay(date));
 const fromGanttEnd = (date, timeUsed) => (timeUsed || !isMidnight(date)) ? date : subOneDay(date);
 
 const createGanttInstance = ({ workDays, holidays, project }) => {
@@ -46,8 +43,10 @@ const createGanttInstance = ({ workDays, holidays, project }) => {
     gantt.config.duration_unit = 'minute';
     gantt.config.auto_types = false;
 
-    gantt.config.work_time = !!project.restrict_tasks_to_working_days;
-    gantt.config.correct_work_time = !!project.restrict_tasks_to_working_days;
+    const hasWeekends = workDays.length < 7;
+    const hasHolidays = holidays && holidays.length > 0;
+    gantt.config.work_time = hasWeekends || hasHolidays;
+    gantt.config.correct_work_time = gantt.config.work_time;
 
     gantt.config.auto_scheduling = {
         enabled: !!project.auto_schedule_tasks,
@@ -57,18 +56,13 @@ const createGanttInstance = ({ workDays, holidays, project }) => {
         schedule_on_parse: false
     };
 
-    // 3. Working Days — real full-day config
     [0, 1, 2, 3, 4, 5, 6].forEach(day => {
         gantt.setWorkTime({ day, hours: workDays.includes(day) ? ['00:00-24:00'] : false });
     });
 
-    holidays.forEach(dateStr => {
+    (holidays || []).forEach(dateStr => {
         gantt.setWorkTime({ date: new Date(dateStr + 'T00:00:00'), hours: false });
     });
-
-    // ── DEBUG: confirm plugin/config state right after instance creation ──
-    console.log('[SNAP-DEBUG] createGanttInstance: auto_scheduling config =', JSON.stringify(gantt.config.auto_scheduling));
-    console.log('[SNAP-DEBUG] createGanttInstance: duration_unit =', gantt.config.duration_unit, ' work_time =', gantt.config.work_time);
 
     return gantt;
 };
@@ -83,42 +77,62 @@ export const runScheduling = ({ context, task_id, triggeredDates, operation, lin
     const circularCheck = hasCircularLink(allTasks, linksForValidation);
     if (circularCheck) return { success: false, error: 'Circular link detected — scheduling blocked' };
 
-    const hierarchyCheck = hasHierarchyLink(allTasks, linksForValidation);
-    if (hierarchyCheck.found) return { success: false, error: `Hierarchy link blocked: ${hierarchyCheck.reason}` };
-
     if (!project.auto_schedule_tasks) {
         return {
             success: true,
             message: 'Auto-scheduling is disabled for this project',
-            data: { triggeredTask: null, tasks: [], impactedTaskIds: [], project: null }
+            data: {
+                triggeredTask: null,
+                tasks: [],
+                impactedTaskIds: [],
+                project: { id: project.id, start_date: project.start_date, due_date: project.due_date }
+            }
         };
     }
 
-    const snapshot = new Map(allTasks.map(t => [t.id, {
-        name: t.name || `Task ${t.id}`,
-        start_at: anyToMysql(t.start_at) ?? t.start_at,
-        due_at: anyToMysql(t.due_at) ?? t.due_at,
-        constraint_type: t.constraint_type || 'asap',
-        constraint_date: t.constraint_date ? (anyToMysql(t.constraint_date) ?? (toDateOnly(t.constraint_date) + ' 00:00:00')) : null,
-        time_used: !!t.time_used
-    }]));
-
-    console.log('[SNAP-DEBUG] runScheduling called. task_id=', task_id, ' operation=', operation, ' allTasks.length=', allTasks.length, ' allLinks.length=', allLinks.length);
+    // ── Build snapshot (duration will be filled after parse) ──
+    const snapshot = new Map(allTasks.map(t => {
+        return [t.id, {
+            name: t.name || `Task ${t.id}`,
+            start_at: anyToMysql(t.start_at) ?? t.start_at,
+            due_at: anyToMysql(t.due_at) ?? t.due_at,
+            constraint_type: t.constraint_type || 'asap',
+            constraint_date: t.constraint_date ? (anyToMysql(t.constraint_date) ?? (toDateOnly(t.constraint_date) + ' 00:00:00')) : null,
+            time_used: !!t.time_used,
+            type: t.task_type_handler || 'task',
+            duration: null // will be set after parse
+        }];
+    }));
 
     const gantt = createGanttInstance({ workDays, holidays, project });
 
+    // ── Convert tasks to Gantt format ──
     const normTasks = allTasks.map(t => {
         const timeUsed = !!t.time_used;
+        const type = t.task_type_handler || 'task';
+        let startDate = toDate(t.start_at);
+        let endDate = toDate(t.due_at);
+        let duration = null;
+
+        if (type === 'milestone') {
+            startDate = endDate;
+            duration = 0;
+        } else {
+            endDate = toGanttEnd(endDate, timeUsed);
+        }
+
         return {
             id: t.id,
             text: t.name || `Task ${t.id}`,
             parent: t.parent_id ?? 0,
-            start_date: toDate(t.start_at),
-            end_date: toGanttEnd(toDate(t.due_at), timeUsed),
+            start_date: startDate,
+            end_date: endDate,
+            duration: duration,
             progress: t.progress || 0,
             constraint_type: t.constraint_type || 'asap',
             constraint_date: t.constraint_date ? toDate(t.constraint_date) : null,
-            time_used: timeUsed
+            time_used: timeUsed,
+            type: type
         };
     });
 
@@ -128,10 +142,6 @@ export const runScheduling = ({ context, task_id, triggeredDates, operation, lin
         target: l.target_task_id,
         type: LINK_TYPE_MAP[l.type] ?? '0'
     }));
-
-    console.log('[SNAP-DEBUG] normTasks (id/time_used/start/end) =',
-        normTasks.map(t => ({ id: t.id, time_used: t.time_used, start_date: t.start_date, end_date: t.end_date })));
-    console.log('[SNAP-DEBUG] normLinks =', normLinks);
 
     let derivedTaskId = task_id;
     if (operation === 'delete_link' && link_id) {
@@ -146,32 +156,67 @@ export const runScheduling = ({ context, task_id, triggeredDates, operation, lin
 
     gantt.parse({ data: normTasks, links: normLinks });
 
-    // ── DEBUG: confirm the parsed task actually retained time_used as a
-    // property readable via gantt.getTask() AFTER parse — this checks
-    // whether the custom prop truly round-trips through parse(), separate
-    // from whether the event itself fires.
-    normTasks.forEach(t => {
-        const parsed = gantt.getTask(t.id);
-        console.log('[SNAP-DEBUG] post-parse getTask check: id=', t.id,
-            ' time_used on parsed task=', parsed ? parsed.time_used : '(task not found)',
-            ' typeof=', parsed ? typeof parsed.time_used : 'n/a');
+    // ── FIX: Store duration from Gantt into snapshot ──
+    gantt.eachTask(t => {
+        const snap = snapshot.get(t.id);
+        if (snap) {
+            snap.duration = t.duration;
+        }
     });
 
     gantt.config.auto_scheduling.gap_behavior = project.auto_schedule_tasks_gap === 'compress' ? 'compress' : 'preserve';
     gantt.config.auto_scheduling.apply_constraints = true;
 
+    // ── Apply triggered date updates (use stored duration) ──
     if (task_id && triggeredDates) {
         const task = gantt.getTask(task_id);
         if (task) {
             const oldStart = task.start_date.getTime();
             let newStart = toDate(triggeredDates.start_at);
-            let newEnd = toGanttEnd(toDate(triggeredDates.due_at), task.time_used);
+            let newEnd = toDate(triggeredDates.due_at);
 
-            if (project.restrict_tasks_to_working_days) {
-                const minDuration = task.time_used ? 1 : 1440;
-                const duration = Math.max(minDuration, gantt.calculateDuration({ start_date: newStart, end_date: newEnd, task }));
-                if (!gantt.isWorkTime(newStart)) newStart = gantt.getClosestWorkTime({ date: newStart, dir: 'future' });
-                newEnd = gantt.calculateEndDate({ start_date: newStart, duration, unit: 'minute', task });
+            if (task.type === 'milestone') {
+                const singleDate = newEnd || newStart || new Date();
+                newStart = singleDate;
+                newEnd = singleDate;
+            } else {
+                const snap = snapshot.get(task_id);
+                let originalDuration = snap ? snap.duration : null;      // ✅ let, not const
+
+                // ✅ FIX: for whole-day tasks (time_used = false), Gantt's duration is
+                // working minutes and collapses to 0 when the original start lands on
+                // a non-working day. Use the calendar day span from the input instead.
+                if (!task.time_used) {
+                    const origStart = toDate(triggeredDates.start_at);
+                    const origDue = toDate(triggeredDates.due_at);
+                    const daySpan = Math.max(
+                        1,
+                        Math.round((origDue - origStart) / 86400000) + 1
+                    );
+                    originalDuration = daySpan * 1440;
+                }
+
+                if (originalDuration !== null) {
+                    if (gantt.config.work_time && !gantt.isWorkTime(newStart)) {
+                        newStart = gantt.getClosestWorkTime({ date: newStart, dir: 'future' });
+                    }
+                    newEnd = gantt.calculateEndDate({
+                        start_date: newStart,
+                        duration: originalDuration,
+                        unit: 'minute',
+                        task
+                    });
+                } else {
+                    // Fallback (should not happen)
+                    if (gantt.config.work_time) {
+                        const minDuration = task.time_used ? 1 : 1440;
+                        const duration = Math.max(minDuration, gantt.calculateDuration({ start_date: newStart, end_date: newEnd, task }));
+                        if (!gantt.isWorkTime(newStart)) newStart = gantt.getClosestWorkTime({ date: newStart, dir: 'future' });
+                        newEnd = gantt.calculateEndDate({ start_date: newStart, duration, unit: 'minute', task });
+                    } else {
+                        newEnd = toGanttEnd(newEnd, task.time_used);
+                    }
+                }
             }
 
             task.start_date = newStart;
@@ -186,6 +231,7 @@ export const runScheduling = ({ context, task_id, triggeredDates, operation, lin
         }
     }
 
+    // ── Handle link operations ──
     if (operation === 'delete_link' && derivedTaskId) {
         const task = gantt.getTask(derivedTaskId);
         if (task && task.constraint_type === 'snet') {
@@ -223,34 +269,7 @@ export const runScheduling = ({ context, task_id, triggeredDates, operation, lin
         derivedTaskId = targetId;
     }
 
-    console.log('[SNAP-DEBUG] about to call autoSchedule. derivedTaskId=', derivedTaskId);
-
-    // ── DEBUG: log EVERY task's duration/start/end right before autoSchedule
-    // runs, so we can see exactly what Gantt itself has stored as duration
-    // for each task going INTO the cascade — not what we computed, what
-    // Gantt's own internal task object says.
-    gantt.eachTask(t => {
-        console.log('[DUR-DEBUG] PRE-autoSchedule task', t.id,
-            'time_used=', t.time_used,
-            'duration=', t.duration,
-            'start_date=', t.start_date,
-            'end_date=', t.end_date);
-    });
-
-    // ── DEBUG: read-only listener (always returns true, applies no
-    // correction) — logs Gantt's own duration value for each task AT THE
-    // MOMENT it gets auto-scheduled, so we can see if duration is already
-    // wrong going in, or gets dropped during the cascade itself.
-    gantt.attachEvent("onAfterTaskAutoSchedule", function (task, start, link, predecessor) {
-        console.log('[DUR-DEBUG] onAfterTaskAutoSchedule for', task.id,
-            'time_used=', task.time_used,
-            'duration=', task.duration,
-            'new start_date=', task.start_date,
-            'new end_date=', task.end_date,
-            'predecessor=', predecessor ? predecessor.id : null);
-        return true;
-    });
-
+    // ── Run auto‑scheduling ──
     if (derivedTaskId) {
         if (gantt.isTaskExists(derivedTaskId)) {
             gantt.autoSchedule(derivedTaskId);
@@ -261,28 +280,71 @@ export const runScheduling = ({ context, task_id, triggeredDates, operation, lin
         gantt.autoSchedule();
     }
 
-    console.log('[SNAP-DEBUG] autoSchedule call completed.');
+    // ── Whole-day normalization pass (skip milestones) ──
+    // Preserve WORKING-DAY span from the original DB values, not calendar-day span.
+    // Weekends/holidays are excluded from the count; zero-working-day spans get
+    // promoted to 1 working day and snap forward to the next working day.
+    gantt.batchUpdate(() => {
+        gantt.eachTask(t => {
+            if (t.type === 'milestone') return;
+            if (t.time_used) return;
 
-    // ── DEBUG: log every task's duration/start/end AFTER autoSchedule
-    // finishes, so we can compare pre vs post directly.
-    gantt.eachTask(t => {
-        console.log('[DUR-DEBUG] POST-autoSchedule task', t.id,
-            'time_used=', t.time_used,
-            'duration=', t.duration,
-            'start_date=', t.start_date,
-            'end_date=', t.end_date);
+            const snap = snapshot.get(t.id);
+            if (!snap || !snap.start_at || !snap.due_at) return;
+
+            const origStart = toDate(snap.start_at);
+            const origDue = toDate(snap.due_at);
+
+            // ── Count working days inside [origStart, origDue] inclusive ──
+            let workingDays = 0;
+            const cursor = new Date(origStart.getTime());
+            while (cursor <= origDue) {
+                if (!gantt.config.work_time || gantt.isWorkTime(cursor)) {
+                    workingDays++;
+                }
+                cursor.setDate(cursor.getDate() + 1);
+            }
+
+            // ── Snap start forward if it sits on a non-working day ──
+            let start = gantt.date.day_start(t.start_date);
+            if (gantt.config.work_time && !gantt.isWorkTime(start)) {
+                start = gantt.getClosestWorkTime({ date: start, dir: 'future' });
+                start = gantt.date.day_start(start);
+            }
+
+            // ── Zero working days in the original span → promote to 1 ──
+            if (workingDays === 0) {
+                workingDays = 1;
+            }
+
+            // ── Advance end by (workingDays - 1) working days ──
+            let end = new Date(start.getTime());
+            let remaining = workingDays - 1;
+            while (remaining > 0) {
+                end.setDate(end.getDate() + 1);
+                if (!gantt.config.work_time || gantt.isWorkTime(end)) {
+                    remaining--;
+                }
+            }
+            end = addOneDay(end);   // Gantt uses exclusive end
+
+            t.start_date = start;
+            t.end_date = end;
+            gantt.updateTask(t.id);
+        });
     });
 
+    // ── Build Diff ──
     const tasks = [];
     let triggeredFinal = null;
-    let projectStartMin = null;
-    let projectEndMax = null;
 
     gantt.eachTask(t => {
-        const inclusiveEnd = fromGanttEnd(t.end_date, t.time_used);
-
-        if (!projectStartMin || t.start_date < projectStartMin) projectStartMin = t.start_date;
-        if (!projectEndMax || inclusiveEnd > projectEndMax) projectEndMax = inclusiveEnd;
+        let inclusiveEnd;
+        if (t.type === 'milestone') {
+            inclusiveEnd = t.end_date;
+        } else {
+            inclusiveEnd = fromGanttEnd(t.end_date, t.time_used);
+        }
 
         const before = snapshot.get(t.id);
         if (!before) return;
@@ -302,7 +364,8 @@ export const runScheduling = ({ context, task_id, triggeredDates, operation, lin
             due_at: newEnd,
             time_used: before.time_used,
             constraint_type: newConstraintType,
-            constraint_date: newConstraintDate
+            constraint_date: newConstraintDate,
+            type: before.type
         };
 
         if (t.id === task_id) {
@@ -313,17 +376,9 @@ export const runScheduling = ({ context, task_id, triggeredDates, operation, lin
         }
     });
 
-    console.log('[SNAP-DEBUG] final tasks[] before return =', JSON.stringify(tasks, null, 2));
-
     gantt.destructor();
 
     const impactedTaskIds = [...new Set(tasks.map(t => t.id))];
-
-    const calculatedProjectBounds = (projectStartMin && projectEndMax) ? {
-        id: project.id,
-        start_date: anyToMysql(projectStartMin),
-        due_date: anyToMysql(projectEndMax)
-    } : null;
 
     return {
         success: true,
@@ -332,7 +387,7 @@ export const runScheduling = ({ context, task_id, triggeredDates, operation, lin
             triggeredTask: triggeredFinal,
             tasks,
             impactedTaskIds,
-            project: calculatedProjectBounds
+            project: { id: project.id, start_date: project.start_date, due_date: project.due_date }
         }
     };
 };

@@ -14,6 +14,21 @@ const LINK_TYPE_MAP = {
     'start_to_finish': '3'
 };
 
+// ── Inclusive/Exclusive end-date boundary conversion ──
+// Our business rule: "10th to 12th" = 3 full inclusive days.
+// DHTMLX's native rule: end_date is exclusive (midnight AFTER the last
+// working day) — the same range is 2 days internally.
+// Rather than injecting any time-of-day (e.g. 23:59:59) to bridge this —
+// which reintroduces fractional-day remainders and triggers Gantt's
+// day-unit rounding — we convert with pure whole-day arithmetic, always
+// on exact midnight boundaries. This guarantees calculateDuration() only
+// ever sees integer day spans, so there is nothing for it to round.
+//
+// IMPORTANT: this conversion applies ONLY when time_used === false
+// (whole-day tasks). For time_used === true (hour-precision tasks), the
+// due date is expected to carry a real time-of-day and is NOT a whole-day
+// block — there is no inclusive/exclusive ambiguity to correct, and
+// shifting it by a day would silently corrupt an hour-precision deadline.
 const addOneDay = (date) => {
     const d = new Date(date.getTime());
     d.setDate(d.getDate() + 1);
@@ -24,31 +39,26 @@ const subOneDay = (date) => {
     d.setDate(d.getDate() - 1);
     return d;
 };
-const isMidnight = (date) => (
-    date.getHours() === 0 && date.getMinutes() === 0 &&
-    date.getSeconds() === 0 && date.getMilliseconds() === 0
-);
 // Gated wrappers — use these everywhere instead of the raw helpers above.
-// The shift applies ONLY when time_used=false AND the date is actually
-// sitting at midnight (a true exclusive-boundary case). If a time_used=false
-// task's date carries a real, non-midnight clock time — e.g. inherited via
-// a link cascade from a time_used=true predecessor, or produced by a
-// partial-hour working-time window — treat it as-is, no shift. Blindly
-// shifting a real clock time by a calendar day (rather than a true midnight
-// boundary) produces nonsense like a due date landing before the start date.
-const toGanttEnd = (date, timeUsed) => (timeUsed || !isMidnight(date)) ? date : addOneDay(date);
-const fromGanttEnd = (date, timeUsed) => (timeUsed || !isMidnight(date)) ? date : subOneDay(date);
+const toGanttEnd = (date, timeUsed) => (timeUsed ? date : addOneDay(date));
+const fromGanttEnd = (date, timeUsed) => (timeUsed ? date : subOneDay(date));
+
+// NOTE: No module-level gantt instance here — removed rogue instance that was
+// created at module load time and potentially corrupting shared internal state.
 
 const createGanttInstance = ({ workDays, holidays, project }) => {
     const gantt = Gantt.getGanttInstance({ plugins: { auto_scheduling: true } });
 
+    // 1. Core Configuration
     gantt.config.date_format = "%Y-%m-%d %H:%i:%s";
-    gantt.config.duration_unit = 'minute';
+    gantt.config.duration_unit = 'day';
     gantt.config.auto_types = false;
 
+    // 2. Database Flags → Native Gantt Config
     gantt.config.work_time = !!project.restrict_tasks_to_working_days;
     gantt.config.correct_work_time = !!project.restrict_tasks_to_working_days;
 
+    // Set full auto_scheduling config object
     gantt.config.auto_scheduling = {
         enabled: !!project.auto_schedule_tasks,
         apply_constraints: true,
@@ -57,18 +67,15 @@ const createGanttInstance = ({ workDays, holidays, project }) => {
         schedule_on_parse: false
     };
 
-    // 3. Working Days — real full-day config
+    // 3. Working Days
     [0, 1, 2, 3, 4, 5, 6].forEach(day => {
         gantt.setWorkTime({ day, hours: workDays.includes(day) ? ['00:00-24:00'] : false });
     });
 
+    // 4. Holidays
     holidays.forEach(dateStr => {
         gantt.setWorkTime({ date: new Date(dateStr + 'T00:00:00'), hours: false });
     });
-
-    // ── DEBUG: confirm plugin/config state right after instance creation ──
-    console.log('[SNAP-DEBUG] createGanttInstance: auto_scheduling config =', JSON.stringify(gantt.config.auto_scheduling));
-    console.log('[SNAP-DEBUG] createGanttInstance: duration_unit =', gantt.config.duration_unit, ' work_time =', gantt.config.work_time);
 
     return gantt;
 };
@@ -80,6 +87,7 @@ export const runScheduling = ({ context, task_id, triggeredDates, operation, lin
         ? [...allLinks, { source_task_id: Number(link.source), target_task_id: Number(link.target) }]
         : allLinks;
 
+    // ── Validations ──
     const circularCheck = hasCircularLink(allTasks, linksForValidation);
     if (circularCheck) return { success: false, error: 'Circular link detected — scheduling blocked' };
 
@@ -90,10 +98,16 @@ export const runScheduling = ({ context, task_id, triggeredDates, operation, lin
         return {
             success: true,
             message: 'Auto-scheduling is disabled for this project',
-            data: { triggeredTask: null, tasks: [], impactedTaskIds: [], project: null }
+            data: {
+                triggeredTask: null,
+                tasks: [],
+                impactedTaskIds: [],
+                project: null
+            }
         };
     }
 
+    // ── 1. Baseline Snapshot (before any changes) ──
     const snapshot = new Map(allTasks.map(t => [t.id, {
         name: t.name || `Task ${t.id}`,
         start_at: anyToMysql(t.start_at) ?? t.start_at,
@@ -103,10 +117,9 @@ export const runScheduling = ({ context, task_id, triggeredDates, operation, lin
         time_used: !!t.time_used
     }]));
 
-    console.log('[SNAP-DEBUG] runScheduling called. task_id=', task_id, ' operation=', operation, ' allTasks.length=', allTasks.length, ' allLinks.length=', allLinks.length);
-
     const gantt = createGanttInstance({ workDays, holidays, project });
 
+    // ── 2. Format Tasks and Links ──
     const normTasks = allTasks.map(t => {
         const timeUsed = !!t.time_used;
         return {
@@ -114,14 +127,16 @@ export const runScheduling = ({ context, task_id, triggeredDates, operation, lin
             text: t.name || `Task ${t.id}`,
             parent: t.parent_id ?? 0,
             start_date: toDate(t.start_at),
-            end_date: toGanttEnd(toDate(t.due_at), timeUsed),
+            end_date: toGanttEnd(toDate(t.due_at), timeUsed), // inclusive DB date -> exclusive Gantt date, only for whole-day tasks
             progress: t.progress || 0,
             constraint_type: t.constraint_type || 'asap',
             constraint_date: t.constraint_date ? toDate(t.constraint_date) : null,
-            time_used: timeUsed
+            time_used: timeUsed // custom prop — round-trips through Gantt, read back at every later call site
         };
     });
 
+    // If delete_link: remove all incoming links to successor before parse
+    // so DHTMLX never sees the deleted link at all
     let normLinks = allLinks.map(l => ({
         id: l.id,
         source: l.source_task_id,
@@ -129,49 +144,41 @@ export const runScheduling = ({ context, task_id, triggeredDates, operation, lin
         type: LINK_TYPE_MAP[l.type] ?? '0'
     }));
 
-    console.log('[SNAP-DEBUG] normTasks (id/time_used/start/end) =',
-        normTasks.map(t => ({ id: t.id, time_used: t.time_used, start_date: t.start_date, end_date: t.end_date })));
-    console.log('[SNAP-DEBUG] normLinks =', normLinks);
-
+    // For delete_link: find the target from the link, then remove only that link
     let derivedTaskId = task_id;
     if (operation === 'delete_link' && link_id) {
         const deletedLink = normLinks.find(l => l.id === link_id);
         if (deletedLink) {
-            derivedTaskId = deletedLink.target;
+            derivedTaskId = deletedLink.target;  // use as autoSchedule anchor
         } else {
             return { success: false, error: 'Link to delete not found' };
         }
-        normLinks = normLinks.filter(l => l.id !== link_id);
+        normLinks = normLinks.filter(l => l.id !== link_id);  // remove only deleted link
     }
 
     gantt.parse({ data: normTasks, links: normLinks });
 
-    // ── DEBUG: confirm the parsed task actually retained time_used as a
-    // property readable via gantt.getTask() AFTER parse — this checks
-    // whether the custom prop truly round-trips through parse(), separate
-    // from whether the event itself fires.
-    normTasks.forEach(t => {
-        const parsed = gantt.getTask(t.id);
-        console.log('[SNAP-DEBUG] post-parse getTask check: id=', t.id,
-            ' time_used on parsed task=', parsed ? parsed.time_used : '(task not found)',
-            ' typeof=', parsed ? typeof parsed.time_used : 'n/a');
-    });
-
+    // Re-apply after parse — gantt.parse() resets the auto_scheduling config
+    // object internally, so these must be set again before autoSchedule runs.
     gantt.config.auto_scheduling.gap_behavior = project.auto_schedule_tasks_gap === 'compress' ? 'compress' : 'preserve';
     gantt.config.auto_scheduling.apply_constraints = true;
 
+    // ── NOTE: Constraint-date snap-pass logic REMOVED ──
+    // Testing native DHTMLX behavior when a constraint_date falls on a
+    // non-working day, with no manual correction applied.
+
+    // ── 3. Apply Triggered Task Update (drag / resize) ──
     if (task_id && triggeredDates) {
         const task = gantt.getTask(task_id);
         if (task) {
             const oldStart = task.start_date.getTime();
             let newStart = toDate(triggeredDates.start_at);
-            let newEnd = toGanttEnd(toDate(triggeredDates.due_at), task.time_used);
+            let newEnd = toGanttEnd(toDate(triggeredDates.due_at), task.time_used); // inclusive input -> exclusive for Gantt math, only for whole-day tasks
 
             if (project.restrict_tasks_to_working_days) {
-                const minDuration = task.time_used ? 1 : 1440;
-                const duration = Math.max(minDuration, gantt.calculateDuration({ start_date: newStart, end_date: newEnd, task }));
+                const duration = Math.max(1, gantt.calculateDuration({ start_date: newStart, end_date: newEnd, task }));
                 if (!gantt.isWorkTime(newStart)) newStart = gantt.getClosestWorkTime({ date: newStart, dir: 'future' });
-                newEnd = gantt.calculateEndDate({ start_date: newStart, duration, unit: 'minute', task });
+                newEnd = gantt.calculateEndDate({ start_date: newStart, duration, unit: 'day', task });
             }
 
             task.start_date = newStart;
@@ -186,6 +193,7 @@ export const runScheduling = ({ context, task_id, triggeredDates, operation, lin
         }
     }
 
+    // Step 3b — clear stale SNET on derived target
     if (operation === 'delete_link' && derivedTaskId) {
         const task = gantt.getTask(derivedTaskId);
         if (task && task.constraint_type === 'snet') {
@@ -195,62 +203,54 @@ export const runScheduling = ({ context, task_id, triggeredDates, operation, lin
         }
     }
 
+    // ── Step 3c — update_link: change an existing link's type ──
     if (operation === 'update_link' && link_id && new_type) {
         if (!gantt.isLinkExists(link_id)) {
             return { success: false, error: 'Link to update not found' };
         }
+
         const existingLink = gantt.getLink(link_id);
         const mappedType = LINK_TYPE_MAP[new_type] ?? new_type;
+
+        // STF (type '3') has reversed dependency direction — source depends on target.
+        // All other types — target depends on source.
         const cascadeFrom = (mappedType === '3') ? existingLink.source : existingLink.target;
+
+        // Clear stale SNET on the cascade task — old constraint may not apply under new type
         const affectedTask = gantt.getTask(cascadeFrom);
         if (affectedTask && affectedTask.constraint_type === 'snet') {
             affectedTask.constraint_type = 'asap';
             affectedTask.constraint_date = null;
             gantt.updateTask(cascadeFrom);
         }
+
+        // Update the link type directly on the already-parsed engine
         gantt.updateLink(link_id, { ...existingLink, type: mappedType });
+
         derivedTaskId = cascadeFrom;
     }
 
     if (operation === 'add_link' && link) {
         const sourceId = Number(link.source);
         const targetId = Number(link.target);
+
         if (!gantt.isTaskExists(sourceId) || !gantt.isTaskExists(targetId)) {
             throw new Error(`Scheduling blocked: Source (${sourceId}) or Target (${targetId}) does not exist in Project ${project.id}`);
         }
+
         const mappedType = LINK_TYPE_MAP[link.type] ?? link.type ?? '0';
-        gantt.addLink({ id: 'virtual_preview_link', source: sourceId, target: targetId, type: mappedType });
-        derivedTaskId = targetId;
+
+        gantt.addLink({
+            id: 'virtual_preview_link',
+            source: sourceId,
+            target: targetId,
+            type: mappedType
+        });
+
+        derivedTaskId = targetId;  // ← cascade forward from target
     }
 
-    console.log('[SNAP-DEBUG] about to call autoSchedule. derivedTaskId=', derivedTaskId);
-
-    // ── DEBUG: log EVERY task's duration/start/end right before autoSchedule
-    // runs, so we can see exactly what Gantt itself has stored as duration
-    // for each task going INTO the cascade — not what we computed, what
-    // Gantt's own internal task object says.
-    gantt.eachTask(t => {
-        console.log('[DUR-DEBUG] PRE-autoSchedule task', t.id,
-            'time_used=', t.time_used,
-            'duration=', t.duration,
-            'start_date=', t.start_date,
-            'end_date=', t.end_date);
-    });
-
-    // ── DEBUG: read-only listener (always returns true, applies no
-    // correction) — logs Gantt's own duration value for each task AT THE
-    // MOMENT it gets auto-scheduled, so we can see if duration is already
-    // wrong going in, or gets dropped during the cascade itself.
-    gantt.attachEvent("onAfterTaskAutoSchedule", function (task, start, link, predecessor) {
-        console.log('[DUR-DEBUG] onAfterTaskAutoSchedule for', task.id,
-            'time_used=', task.time_used,
-            'duration=', task.duration,
-            'new start_date=', task.start_date,
-            'new end_date=', task.end_date,
-            'predecessor=', predecessor ? predecessor.id : null);
-        return true;
-    });
-
+    // Step 4 — autoSchedule from derived target
     if (derivedTaskId) {
         if (gantt.isTaskExists(derivedTaskId)) {
             gantt.autoSchedule(derivedTaskId);
@@ -261,25 +261,22 @@ export const runScheduling = ({ context, task_id, triggeredDates, operation, lin
         gantt.autoSchedule();
     }
 
-    console.log('[SNAP-DEBUG] autoSchedule call completed.');
-
-    // ── DEBUG: log every task's duration/start/end AFTER autoSchedule
-    // finishes, so we can compare pre vs post directly.
-    gantt.eachTask(t => {
-        console.log('[DUR-DEBUG] POST-autoSchedule task', t.id,
-            'time_used=', t.time_used,
-            'duration=', t.duration,
-            'start_date=', t.start_date,
-            'end_date=', t.end_date);
-    });
-
+    // ── 5. Build Diff ──
+    // Single unified list: every task whose dates OR constraint changed
+    // (relative to its pre-scheduling snapshot) is reported once, with
+    // its full current state. No more separate linkAdjustments /
+    // constraintUpdates buckets — a task that had both a date shift and
+    // a constraint change previously would've shown up in two places;
+    // now it's one entry with both new values already reflected.
     const tasks = [];
     let triggeredFinal = null;
+
     let projectStartMin = null;
     let projectEndMax = null;
 
     gantt.eachTask(t => {
-        const inclusiveEnd = fromGanttEnd(t.end_date, t.time_used);
+
+        const inclusiveEnd = fromGanttEnd(t.end_date, t.time_used); // exclusive Gantt date -> inclusive DB date, only for whole-day tasks
 
         if (!projectStartMin || t.start_date < projectStartMin) projectStartMin = t.start_date;
         if (!projectEndMax || inclusiveEnd > projectEndMax) projectEndMax = inclusiveEnd;
@@ -306,14 +303,15 @@ export const runScheduling = ({ context, task_id, triggeredDates, operation, lin
         };
 
         if (t.id === task_id) {
+            // Triggered task is always reported as triggeredTask, regardless
+            // of whether anything actually changed (matches prior behavior
+            // where the trigger's outcome is always surfaced).
             triggeredFinal = taskOutput;
             if (dateChanged || constraintChanged) tasks.push(taskOutput);
         } else if (dateChanged || constraintChanged) {
             tasks.push(taskOutput);
         }
     });
-
-    console.log('[SNAP-DEBUG] final tasks[] before return =', JSON.stringify(tasks, null, 2));
 
     gantt.destructor();
 

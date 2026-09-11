@@ -35,4 +35,8 @@ export const LOG_MAX_FILES = '14d';
 // Add this line to your existing constants exports
 export const HMAC_TIME_WINDOW_SECONDS = 30;
 
-export const GANTT_NODE_SECRET = '3626433bcc1b5c1cb17bc5bd2bcba47992fcba985a22c26f6d19b350bc494822'
+export const GANTT_NODE_SECRET = '3626433bcc1b5c1cb17bc5bd2bcba47992fcba985a22c26f6d19b350bc494822';
+
+// Duration calculation constants
+export const MINIMUM_DURATION_YEAR = 1500;
+export const MAXIMUM_DURATION_YEAR = 3000;

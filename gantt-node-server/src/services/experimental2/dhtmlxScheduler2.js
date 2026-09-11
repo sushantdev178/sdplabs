@@ -1,5 +1,3 @@
-// src/services/dhtmlxScheduler.js
-
 import { createRequire } from 'module';
 import { toDate, anyToMysql, toDateOnly, toMin } from '../../utils/dateHelper.js';
 import { hasCircularLink, hasHierarchyLink } from '../../validators/ganttValidator.js';
@@ -28,15 +26,10 @@ const isMidnight = (date) => (
     date.getHours() === 0 && date.getMinutes() === 0 &&
     date.getSeconds() === 0 && date.getMilliseconds() === 0
 );
-// Gated wrappers — use these everywhere instead of the raw helpers above.
-// The shift applies ONLY when time_used=false AND the date is actually
-// sitting at midnight (a true exclusive-boundary case). If a time_used=false
-// task's date carries a real, non-midnight clock time — e.g. inherited via
-// a link cascade from a time_used=true predecessor, or produced by a
-// partial-hour working-time window — treat it as-is, no shift. Blindly
-// shifting a real clock time by a calendar day (rather than a true midnight
-// boundary) produces nonsense like a due date landing before the start date.
-const toGanttEnd = (date, timeUsed) => (timeUsed || !isMidnight(date)) ? date : addOneDay(date);
+
+// Since all tasks are time_used=true, toGanttEnd and fromGanttEnd behave as identity.
+// We keep them for consistency with other tracks; no shift will occur.
+const toGanttEnd = (date, timeUsed) => (timeUsed ? date : addOneDay(date));
 const fromGanttEnd = (date, timeUsed) => (timeUsed || !isMidnight(date)) ? date : subOneDay(date);
 
 const createGanttInstance = ({ workDays, holidays, project }) => {
@@ -46,8 +39,11 @@ const createGanttInstance = ({ workDays, holidays, project }) => {
     gantt.config.duration_unit = 'minute';
     gantt.config.auto_types = false;
 
-    gantt.config.work_time = !!project.restrict_tasks_to_working_days;
-    gantt.config.correct_work_time = !!project.restrict_tasks_to_working_days;
+    // For this experiment we ALWAYS enable work_time / correct_work_time.
+    // The flag from the project is ignored (we assume restrict_tasks_to_working_days is true,
+    // but we enforce it here to be safe).
+    gantt.config.work_time = true;
+    gantt.config.correct_work_time = true;
 
     gantt.config.auto_scheduling = {
         enabled: !!project.auto_schedule_tasks,
@@ -57,16 +53,20 @@ const createGanttInstance = ({ workDays, holidays, project }) => {
         schedule_on_parse: false
     };
 
-    // 3. Working Days — real full-day config
+    // Set working days: Monday(1) to Friday(5) with fixed hours 10:00–19:00
     [0, 1, 2, 3, 4, 5, 6].forEach(day => {
-        gantt.setWorkTime({ day, hours: workDays.includes(day) ? ['00:00-24:00'] : false });
+        if (workDays.includes(day)) {
+            gantt.setWorkTime({ day, hours: ['10:00-19:00'] });
+        } else {
+            gantt.setWorkTime({ day, hours: false });
+        }
     });
 
     holidays.forEach(dateStr => {
         gantt.setWorkTime({ date: new Date(dateStr + 'T00:00:00'), hours: false });
     });
 
-    // ── DEBUG: confirm plugin/config state right after instance creation ──
+    // Debug: confirm plugin/config state
     console.log('[SNAP-DEBUG] createGanttInstance: auto_scheduling config =', JSON.stringify(gantt.config.auto_scheduling));
     console.log('[SNAP-DEBUG] createGanttInstance: duration_unit =', gantt.config.duration_unit, ' work_time =', gantt.config.work_time);
 
@@ -146,10 +146,7 @@ export const runScheduling = ({ context, task_id, triggeredDates, operation, lin
 
     gantt.parse({ data: normTasks, links: normLinks });
 
-    // ── DEBUG: confirm the parsed task actually retained time_used as a
-    // property readable via gantt.getTask() AFTER parse — this checks
-    // whether the custom prop truly round-trips through parse(), separate
-    // from whether the event itself fires.
+    // Debug: confirm time_used round-trips
     normTasks.forEach(t => {
         const parsed = gantt.getTask(t.id);
         console.log('[SNAP-DEBUG] post-parse getTask check: id=', t.id,
@@ -160,6 +157,7 @@ export const runScheduling = ({ context, task_id, triggeredDates, operation, lin
     gantt.config.auto_scheduling.gap_behavior = project.auto_schedule_tasks_gap === 'compress' ? 'compress' : 'preserve';
     gantt.config.auto_scheduling.apply_constraints = true;
 
+    // Apply triggered dates (if any)
     if (task_id && triggeredDates) {
         const task = gantt.getTask(task_id);
         if (task) {
@@ -167,7 +165,8 @@ export const runScheduling = ({ context, task_id, triggeredDates, operation, lin
             let newStart = toDate(triggeredDates.start_at);
             let newEnd = toGanttEnd(toDate(triggeredDates.due_at), task.time_used);
 
-            if (project.restrict_tasks_to_working_days) {
+            // With work_time=true, ensure newStart is inside working time
+            if (gantt.config.work_time) {
                 const minDuration = task.time_used ? 1 : 1440;
                 const duration = Math.max(minDuration, gantt.calculateDuration({ start_date: newStart, end_date: newEnd, task }));
                 if (!gantt.isWorkTime(newStart)) newStart = gantt.getClosestWorkTime({ date: newStart, dir: 'future' });
@@ -225,10 +224,7 @@ export const runScheduling = ({ context, task_id, triggeredDates, operation, lin
 
     console.log('[SNAP-DEBUG] about to call autoSchedule. derivedTaskId=', derivedTaskId);
 
-    // ── DEBUG: log EVERY task's duration/start/end right before autoSchedule
-    // runs, so we can see exactly what Gantt itself has stored as duration
-    // for each task going INTO the cascade — not what we computed, what
-    // Gantt's own internal task object says.
+    // Debug: log durations before autoSchedule
     gantt.eachTask(t => {
         console.log('[DUR-DEBUG] PRE-autoSchedule task', t.id,
             'time_used=', t.time_used,
@@ -237,10 +233,7 @@ export const runScheduling = ({ context, task_id, triggeredDates, operation, lin
             'end_date=', t.end_date);
     });
 
-    // ── DEBUG: read-only listener (always returns true, applies no
-    // correction) — logs Gantt's own duration value for each task AT THE
-    // MOMENT it gets auto-scheduled, so we can see if duration is already
-    // wrong going in, or gets dropped during the cascade itself.
+    // Attach a read-only listener for extra debugging (optional)
     gantt.attachEvent("onAfterTaskAutoSchedule", function (task, start, link, predecessor) {
         console.log('[DUR-DEBUG] onAfterTaskAutoSchedule for', task.id,
             'time_used=', task.time_used,
@@ -263,8 +256,9 @@ export const runScheduling = ({ context, task_id, triggeredDates, operation, lin
 
     console.log('[SNAP-DEBUG] autoSchedule call completed.');
 
-    // ── DEBUG: log every task's duration/start/end AFTER autoSchedule
-    // finishes, so we can compare pre vs post directly.
+    // NO whole-day normalization pass in this track.
+
+    // Debug: log durations after autoSchedule
     gantt.eachTask(t => {
         console.log('[DUR-DEBUG] POST-autoSchedule task', t.id,
             'time_used=', t.time_used,
@@ -285,7 +279,15 @@ export const runScheduling = ({ context, task_id, triggeredDates, operation, lin
         if (!projectEndMax || inclusiveEnd > projectEndMax) projectEndMax = inclusiveEnd;
 
         const before = snapshot.get(t.id);
-        if (!before) return;
+
+        console.log('[DIFF-DEBUG] task', t.id, ' (typeof', typeof t.id, ')',
+            ' snapshot lookup found=', !!before,
+            ' snapshot has keys of type:', snapshot.size ? typeof [...snapshot.keys()][0] : 'n/a');
+
+        if (!before) {
+            console.log('[DIFF-DEBUG] SKIPPING task', t.id, '- no snapshot entry found. This task will be ABSENT from output.');
+            return;
+        }
 
         const newStart = anyToMysql(t.start_date);
         const newEnd = anyToMysql(inclusiveEnd);
@@ -294,6 +296,9 @@ export const runScheduling = ({ context, task_id, triggeredDates, operation, lin
 
         const dateChanged = toMin(newStart) !== toMin(before.start_at) || toMin(newEnd) !== toMin(before.due_at);
         const constraintChanged = newConstraintType !== before.constraint_type || toMin(newConstraintDate) !== toMin(before.constraint_date);
+
+        console.log('[DIFF-DEBUG] task', t.id, ' before.start_at=', before.start_at, ' newStart=', newStart,
+            ' before.due_at=', before.due_at, ' newEnd=', newEnd, ' dateChanged=', dateChanged, ' constraintChanged=', constraintChanged);
 
         const taskOutput = {
             id: t.id,

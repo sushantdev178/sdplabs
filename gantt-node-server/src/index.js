@@ -2,6 +2,10 @@
 import express from 'express';
 import cors from 'cors';
 import ganttRoutes from './routes/gantt.js';
+import taskUtilityRoutes from './routes/taskUtility.js';
+import experimentRoutes from './routes/experiment.js';
+
+
 import ganttAuth from './middlewares/ganttAuth.js'; // <-- 1. Import the middleware here
 import { errorResponse } from './utils/response.js';
 import { DEBUG_MODE, API_PREFIX } from './config/constants.js';
@@ -21,6 +25,12 @@ app.use(express.urlencoded({ extended: true }));
 
 // app.use(API_PREFIX, ganttAuth, ganttRoutes);
 app.use(API_PREFIX, ganttRoutes);
+
+// task utility routes
+app.use(API_PREFIX, taskUtilityRoutes);
+
+app.use('/experiment', experimentRoutes);
+
 
 // ─── 404 handler ─────────────────────────────────────────────
 app.use((req, res) => {
