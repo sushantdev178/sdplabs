@@ -1,4 +1,9 @@
-// src/controllers/ganttController.js
+// src/controllers/v4/ganttController.js
+//
+// v4 — working days from ph_project_working_days + use_working_time flag.
+//      Mirrors v3's controller shape exactly (calculate, calculateImpact,
+//      validateLink, getProject), routed through v4's ganttEngine.js
+//      (working-days-table scheduler underneath).
 
 import {
     validateCalculateRequest,
@@ -11,16 +16,17 @@ import {
     calculateImpactPreview,
     validateStandaloneLink,
     getProjectData
-} from '../../services/v1/ganttEngine.js';
+} from '../../services/v4/ganttEngine.js';
 import { successResponse, errorResponse, validationError } from '../../utils/response.js';
 
-// POST /api/gantt/calculate
+// POST /api/gantt/v4/calculate
 export const calculate = async (req, res) => {
     try {
         const { isValid, errors } = validateCalculateRequest(req.body);
         if (!isValid) return validationError(res, errors, 'Invalid calculation request');
 
         const { workspace_id, project_id, task_id, start_at, due_at, operation, link_id, new_type } = req.body;
+
         const result = await recalculateImpact({
             workspace_id,
             project_id,
@@ -29,7 +35,7 @@ export const calculate = async (req, res) => {
             due_at,
             operation: operation || null,
             link_id,
-            new_type: new_type || null   // ADD THIS
+            new_type: new_type || null
         });
 
         if (!result.success) {
@@ -42,7 +48,7 @@ export const calculate = async (req, res) => {
     }
 };
 
-// POST /api/gantt/calculate-impact
+// POST /api/gantt/v4/calculate-impact
 export const calculateImpact = async (req, res) => {
     try {
         const { isValid, errors } = validateImpactRequest(req.body);
@@ -57,9 +63,9 @@ export const calculateImpact = async (req, res) => {
             start_at,
             due_at,
             operation: operation || null,
-            link_id: link_id || null, // pass it down
-            link: link || null,        // pass it down 
-            new_type: new_type || null   // ADD THIS      
+            link_id: link_id || null,
+            link: link || null,
+            new_type: new_type || null
         });
 
         if (!result.success) {
@@ -72,7 +78,7 @@ export const calculateImpact = async (req, res) => {
     }
 };
 
-// POST /api/gantt/validate
+// POST /api/gantt/v4/validate
 export const validateLink = async (req, res) => {
     try {
         const { isValid, errors } = validateStandaloneLinkRequest(req.body);
@@ -92,11 +98,16 @@ export const validateLink = async (req, res) => {
 
         return successResponse(res, { valid: true }, 'Link is valid');
     } catch (err) {
-        return errorResponse(res, err, 'Failed to validate link');
+        console.error('[v4/validate] error:', err);
+        return res.status(500).json({
+            success: false,
+            message: 'Scheduling blocked !',
+            errors: [err?.message ?? String(err)]
+        });
     }
 };
 
-// GET /api/gantt/project-data
+// GET /api/gantt/v4/project-data
 export const getProject = async (req, res) => {
     try {
         const { isValid, errors } = validateProjectDataRequest(req.query);
@@ -108,6 +119,11 @@ export const getProject = async (req, res) => {
 
         return successResponse(res, data, 'Project data loaded successfully');
     } catch (err) {
-        return errorResponse(res, err, 'Failed to fetch project data');
+        console.error('[v4/project-data] error:', err);
+        return res.status(500).json({
+            success: false,
+            message: 'Scheduling blocked !',
+            errors: [err?.message ?? String(err)]
+        });
     }
 };

@@ -27,7 +27,7 @@ app.use(express.urlencoded({ extended: true }));
 app.use(API_PREFIX, ganttRoutes);
 
 // task utility routes
-app.use(API_PREFIX, taskUtilityRoutes);
+// app.use(API_PREFIX, taskUtilityRoutes);
 
 app.use('/experiment', experimentRoutes);
 

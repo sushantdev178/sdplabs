@@ -4,10 +4,13 @@
 // SHARED CONSTANTS
 // ─────────────────────────────────────────────────────────────
 
-// Only numeric types allowed — Laravel always sends these as 0,1,2,3
 const VALID_LINK_TYPES = ['0', '1', '2', '3'];
 
+const MILESTONE_TYPE = 'milestone';
+const VALID_TASK_TYPES = ['task', 'approval', 'milestone'];
+
 const DATE_REGEX = /^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}|\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z?)$/;
+
 // ─────────────────────────────────────────────────────────────
 // SHARED HELPERS
 // ─────────────────────────────────────────────────────────────
@@ -40,21 +43,18 @@ const validateLinkObject = (link, errors) => {
         return;
     }
 
-    // source
     if (link.source == null) {
         errors.push('link.source is required');
     } else {
         validatePositiveInteger(link.source, 'link.source', errors);
     }
 
-    // target
     if (link.target == null) {
         errors.push('link.target is required');
     } else {
         validatePositiveInteger(link.target, 'link.target', errors);
     }
 
-    // source and target cannot be same
     if (
         link.source != null &&
         link.target != null &&
@@ -63,7 +63,6 @@ const validateLinkObject = (link, errors) => {
         errors.push('link.source and link.target cannot be the same task');
     }
 
-    // type — only 0,1,2,3 allowed
     if (link.type == null) {
         errors.push('link.type is required');
     } else if (!VALID_LINK_TYPES.includes(String(link.type))) {
@@ -79,29 +78,93 @@ const validateLinkId = (link_id, errors) => {
     validatePositiveInteger(link_id, 'link_id', errors);
 };
 
+/**
+ * Shape-only validation of a date-update payload.
+ *
+ * DB-aware rules (e.g. "milestones may have null start_at") are enforced
+ * in ganttEngine.recalculateImpact() after fetchContext() loads the task row.
+ */
+const validateDateUpdateShape = (body, errors) => {
+    const { start_at, due_at, task_id, type } = body || {};
+
+    const startKeyPresent = Object.prototype.hasOwnProperty.call(body, 'start_at');
+    const dueKeyPresent = Object.prototype.hasOwnProperty.call(body, 'due_at');
+
+    const hasStart = start_at !== undefined && start_at !== null;
+    const hasDue = due_at !== undefined && due_at !== null;
+
+    if (!startKeyPresent && !dueKeyPresent) return;
+
+    if (!task_id) errors.push('task_id is required when providing dates');
+
+    if (type !== undefined && type !== null && !VALID_TASK_TYPES.includes(type)) {
+        errors.push(`Invalid type "${type}". Allowed: ${VALID_TASK_TYPES.join(', ')}`);
+        return;
+    }
+
+    if (type === MILESTONE_TYPE) {
+        if (!hasDue) {
+            errors.push('due_at is required for milestone tasks');
+        }
+        if (hasStart) validateDateFormat(start_at, 'start_at', errors);
+        if (hasDue) validateDateFormat(due_at, 'due_at', errors);
+
+        if (hasStart && hasDue && DATE_REGEX.test(start_at) && DATE_REGEX.test(due_at)) {
+            if (new Date(start_at) > new Date(due_at)) {
+                errors.push('start_at cannot be after due_at');
+            }
+        }
+        return;
+    }
+
+    // ── v4: when task_id is present but type is not specified, defer ──
+    // type-aware validation to the engine. The engine reads the actual
+    // task type from the DB (task_type_handler) and enforces milestone
+    // vs regular-task rules there. This lets callers send
+    // { task_id, due_at } (no start_at) for milestones without having
+    // to also pass type: 'milestone'.
+    if (task_id != null && (type === undefined || type === null)) {
+        if (hasStart) validateDateFormat(start_at, 'start_at', errors);
+        if (hasDue) validateDateFormat(due_at, 'due_at', errors);
+
+        if (hasStart && hasDue && DATE_REGEX.test(start_at) && DATE_REGEX.test(due_at)) {
+            if (new Date(start_at) > new Date(due_at)) {
+                errors.push('start_at cannot be after due_at');
+            }
+        }
+        return;
+    }
+
+    if (dueKeyPresent && hasDue && !startKeyPresent) {
+        errors.push('start_at is required when due_at is provided');
+    }
+    if (startKeyPresent && hasStart && !dueKeyPresent) {
+        errors.push('due_at is required when start_at is provided');
+    }
+
+    if (hasStart) validateDateFormat(start_at, 'start_at', errors);
+    if (hasDue) validateDateFormat(due_at, 'due_at', errors);
+
+    if (hasStart && hasDue && DATE_REGEX.test(start_at) && DATE_REGEX.test(due_at)) {
+        if (new Date(start_at) > new Date(due_at)) {
+            errors.push('start_at cannot be after due_at');
+        }
+    }
+};
+
 // ─────────────────────────────────────────────────────────────
 // SECTION 1 — REQUEST-SHAPE VALIDATION
 // ─────────────────────────────────────────────────────────────
 
-/**
- * POST /api/gantt/calculate (POST-DB Save)
- *
- * Valid payloads:
- *   1. Full project recalc:    { workspace_id, project_id }
- *   2. Task date update:       { workspace_id, project_id, task_id, start_at, due_at }
- *   3. Delete link (post-DB):  { workspace_id, project_id, operation: 'delete_link', link_id }
- *
- * NOT valid here:
- *   - operation: 'add_link' (link already in DB, just pass task_id = target)
- *   - virtual link object (DB is source of truth here)
- */
 export const validateCalculateRequest = (body) => {
     const errors = [];
-    const { workspace_id, project_id, start_at, due_at, operation, link_id, task_id, link, new_type } = body || {};
+    const {
+        workspace_id, project_id, start_at, due_at, operation,
+        link_id, task_id, link, new_type
+    } = body || {};
 
     validateBase(body, errors);
 
-    // add_link is NOT valid for /calculate — link is already in DB, use task_id instead
     const VALID_OPERATIONS = ['delete_link', 'update_link'];
 
     if (operation) {
@@ -109,11 +172,8 @@ export const validateCalculateRequest = (body) => {
             errors.push(`Invalid operation "${operation}" for /calculate. Allowed: delete_link. For add_link, omit operation and pass task_id = target instead.`);
         }
 
-        // No mixing task updates with link operations
         if (task_id !== undefined) errors.push('task_id must not be provided when using operation');
         if (start_at !== undefined || due_at !== undefined) errors.push('start_at/due_at must not be provided when using operation');
-
-        // Virtual link object not allowed — DB is source of truth
         if (link !== undefined) errors.push('"link" object is not allowed for /calculate. Use link_id (the saved DB record)');
 
         if (operation === 'delete_link') {
@@ -130,41 +190,22 @@ export const validateCalculateRequest = (body) => {
         }
 
     } else {
-        // Standard task date update or full project recalc
         if (task_id !== undefined) {
             validatePositiveInteger(task_id, 'task_id', errors);
         }
 
-        if (start_at || due_at) {
-            if (!start_at) errors.push('start_at is required when due_at is provided');
-            if (!due_at) errors.push('due_at is required when start_at is provided');
-            if (!task_id) errors.push('task_id is required when providing dates');
-
-            if (start_at) validateDateFormat(start_at, 'start_at', errors);
-            if (due_at) validateDateFormat(due_at, 'due_at', errors);
-
-            if (start_at && due_at && DATE_REGEX.test(start_at) && DATE_REGEX.test(due_at)) {
-                if (new Date(start_at) > new Date(due_at)) {
-                    errors.push('start_at cannot be after due_at');
-                }
-            }
-        }
+        validateDateUpdateShape(body, errors);
     }
 
     return { isValid: errors.length === 0, errors };
 };
 
-/**
- * POST /api/gantt/calculate-impact (PRE-DB Save / Previews)
- *
- * Valid payloads:
- *   1. Task drag preview:      { workspace_id, project_id, task_id, start_at, due_at }
- *   2. Add link preview:       { workspace_id, project_id, operation: 'add_link', link: { source, target, type } }
- *   3. Delete link preview:    { workspace_id, project_id, operation: 'delete_link', link_id }
- */
 export const validateImpactRequest = (body) => {
     const errors = [];
-    const { workspace_id, project_id, start_at, due_at, operation, link_id, task_id, link, new_type } = body || {};
+    const {
+        workspace_id, project_id, start_at, due_at, operation,
+        link_id, task_id, link, new_type
+    } = body || {};
 
     validateBase(body, errors);
 
@@ -175,21 +216,17 @@ export const validateImpactRequest = (body) => {
             errors.push(`Invalid operation "${operation}". Allowed: ${VALID_OPERATIONS.join(', ')}`);
         }
 
-        // No mixing task updates with link operations
         if (task_id !== undefined) errors.push('task_id must not be provided when using operation');
         if (start_at !== undefined || due_at !== undefined) errors.push('start_at/due_at must not be provided when using operation');
 
         if (operation === 'add_link') {
-            // Link doesn't exist in DB yet — must provide virtual link object
             if (link_id !== undefined) {
                 errors.push('link_id cannot be provided for add_link preview — link does not exist in DB yet');
             }
-            // Validate full link object including type
             validateLinkObject(link, errors);
         }
 
         if (operation === 'delete_link') {
-            // Link exists in DB — must provide its ID
             if (link !== undefined) {
                 errors.push('"link" object must not be provided for delete_link — use link_id instead');
             }
@@ -208,27 +245,12 @@ export const validateImpactRequest = (body) => {
             }
         }
 
-
     } else {
-        // Task drag/resize preview
         if (task_id !== undefined) {
             validatePositiveInteger(task_id, 'task_id', errors);
         }
 
-        if (start_at || due_at) {
-            if (!start_at) errors.push('start_at is required when due_at is provided');
-            if (!due_at) errors.push('due_at is required when start_at is provided');
-            if (!task_id) errors.push('task_id is required when providing dates');
-
-            if (start_at) validateDateFormat(start_at, 'start_at', errors);
-            if (due_at) validateDateFormat(due_at, 'due_at', errors);
-
-            if (start_at && due_at && DATE_REGEX.test(start_at) && DATE_REGEX.test(due_at)) {
-                if (new Date(start_at) > new Date(due_at)) {
-                    errors.push('start_at cannot be after due_at');
-                }
-            }
-        }
+        validateDateUpdateShape(body, errors);
     }
 
     return { isValid: errors.length === 0, errors };

@@ -1,59 +1,43 @@
+// src/controllers/utility/taskController.js
 import { calculateTaskDuration } from '../../services/taskUtilityEngine.js';
 
 export const duration = async (req, res) => {
     try {
         const { workspace_id, project_id, start_at, due_at, time_used } = req.body;
 
-        // 1. Required fields: workspace_id, project_id, start_at, due_at, time_used
+        // 1. Required identifiers
         if (!workspace_id || !project_id) {
-            return res.status(400).json({ success: false, error: 'workspace_id and project_id are required' });
-        }
-
-        // 2. All three date/time fields must be present (not null/undefined)
-        if (start_at == null || due_at == null || time_used === undefined || time_used === null) {
-            return res.json({
-                success: true,
-                data: {
-                    duration_minutes: null,
-                    duration_days: null,
-                    working_days_count: null,
-                }
+            return res.status(400).json({
+                success: false,
+                error: 'workspace_id and project_id are required',
             });
         }
 
-        // 3. Validate date formats
-        const startDate = new Date(start_at);
-        const dueDate = new Date(due_at);
-        if (isNaN(startDate) || isNaN(dueDate)) {
-            return res.status(400).json({ success: false, error: 'Invalid date format' });
-        }
-
-        // 4. Prevent negative duration (start > due)
-        if (startDate.getTime() > dueDate.getTime()) {
+        // 2. Dates must be present.
+        //    time_used may be null/undefined → engine treats it as false.
+        if (start_at == null || due_at == null) {
             return res.json({
                 success: true,
                 data: {
+                    duration: null,
+                    duration_unit: null,
                     duration_minutes: null,
                     duration_days: null,
                     working_days_count: null,
-                }
+                },
             });
         }
 
-        // 5. If time_used is false, return null directly (whole-day tasks don't have minute duration)
-        if (time_used === false) {
-            return res.json({
-                success: true,
-                data: {
-                    duration_minutes: null,
-                    duration_days: null,
-                    working_days_count: null,
-                }
-            });
-        }
+        // 3. Hand off to the engine — it validates dates, applies the
+        //    calendar, and picks duration_unit based on time_used.
+        const result = await calculateTaskDuration({
+            workspace_id,
+            project_id,
+            start_at,
+            due_at,
+            time_used,
+        });
 
-        // 6. Otherwise compute duration (time_used must be true)
-        const result = await calculateTaskDuration({ workspace_id, project_id, start_at, due_at, time_used });
         return res.json(result);
     } catch (err) {
         console.error('[utility/duration] error:', err);

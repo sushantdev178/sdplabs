@@ -1,8 +1,9 @@
-// src/controllers/v3/ganttController.js
+// src/controllers/v5/ganttController.js
 //
-// v3 — whole-day approach. Mirrors v2's controller shape exactly
-// (calculate, calculateImpact, validateLink, getProject), routed through
-// v3's ganttEngine.js (whole-day scheduler underneath).
+// v5 — working days from ph_project_working_days + use_working_time flag.
+//      Mirrors v4's controller shape exactly. Routed through v5's
+//      ganttEngine.js which carries duration + duration_unit through
+//      the snapshot and task diff.
 
 import {
     validateCalculateRequest,
@@ -15,10 +16,10 @@ import {
     calculateImpactPreview,
     validateStandaloneLink,
     getProjectData
-} from '../../services/v3/ganttEngine.js';
+} from '../../services/v5/ganttEngine.js';
 import { successResponse, errorResponse, validationError } from '../../utils/response.js';
 
-// POST /api/gantt/v3/calculate
+// POST /api/gantt/v5/calculate
 export const calculate = async (req, res) => {
     try {
         const { isValid, errors } = validateCalculateRequest(req.body);
@@ -47,7 +48,7 @@ export const calculate = async (req, res) => {
     }
 };
 
-// POST /api/gantt/v3/calculate-impact
+// POST /api/gantt/v5/calculate-impact
 export const calculateImpact = async (req, res) => {
     try {
         const { isValid, errors } = validateImpactRequest(req.body);
@@ -77,7 +78,7 @@ export const calculateImpact = async (req, res) => {
     }
 };
 
-// POST /api/gantt/v3/validate
+// POST /api/gantt/v5/validate
 export const validateLink = async (req, res) => {
     try {
         const { isValid, errors } = validateStandaloneLinkRequest(req.body);
@@ -97,11 +98,16 @@ export const validateLink = async (req, res) => {
 
         return successResponse(res, { valid: true }, 'Link is valid');
     } catch (err) {
-        return errorResponse(res, err, 'Failed to validate link');
+        console.error('[v5/validate] error:', err);
+        return res.status(500).json({
+            success: false,
+            message: 'Scheduling blocked !',
+            errors: [err?.message ?? String(err)]
+        });
     }
 };
 
-// GET /api/gantt/v3/project-data
+// GET /api/gantt/v5/project-data
 export const getProject = async (req, res) => {
     try {
         const { isValid, errors } = validateProjectDataRequest(req.query);
@@ -113,6 +119,11 @@ export const getProject = async (req, res) => {
 
         return successResponse(res, data, 'Project data loaded successfully');
     } catch (err) {
-        return errorResponse(res, err, 'Failed to fetch project data');
+        console.error('[v5/project-data] error:', err);
+        return res.status(500).json({
+            success: false,
+            message: 'Scheduling blocked !',
+            errors: [err?.message ?? String(err)]
+        });
     }
 };
